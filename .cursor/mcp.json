@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "litos-mcp": {
+      "command": "${workspaceFolder}/bin/litos-mcp",
+      "args": ["serve"],
+      "cwd": "${workspaceFolder}"
+    }
+  }
+}

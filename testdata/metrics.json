@@ -1,0 +1,36 @@
+{
+  "files_indexed": 12,
+  "symbols_indexed_min": 40,
+  "symbols_in_helpers_go": 3,
+  "search": {
+    "process_payment": {
+      "file_path": "src/billing/billing.go",
+      "start_line": 56,
+      "symbol": "ProcessPayment"
+    },
+    "jwt_verification_min_hits": 1
+  },
+  "read_slice": {
+    "file_path": "src/billing/billing.go",
+    "start_line": 56,
+    "end_line": 69
+  },
+  "thresholds": {
+    "search_token_budget": 600,
+    "read_token_budget": 400,
+    "read_vs_whole_file_ratio_max": 0.2,
+    "index_size_bytes_max": 512000,
+    "index_compression_ratio_max": 0.3,
+    "symbol_density_min": 3,
+    "search_latency_ms": 50,
+    "read_latency_ms": 20,
+    "init_latency_ms": 5000,
+    "hydration_ms": 150,
+    "incremental_latency_ms": 500,
+    "init_db_bytes_tolerance_pct": 0.1
+  },
+  "init_db_bytes": 4096,
+  "benchmarks": {
+    "search_ns_op_max": 96000
+  }
+}
