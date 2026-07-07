@@ -1,0 +1,29 @@
+version: 2
+
+project_name: litos-mcp
+
+builds:
+  - skip: true
+
+checksum:
+  name_template: checksums.txt
+  extra_files:
+    - glob: release-artifacts/*.tar.gz
+    - glob: release-artifacts/*.zip
+
+release:
+  github:
+    owner: stubbies
+    name: litos-mcp
+  draft: false
+  prerelease: auto
+  extra_files:
+    - glob: release-artifacts/*.tar.gz
+    - glob: release-artifacts/*.zip
+
+changelog:
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^chore:'

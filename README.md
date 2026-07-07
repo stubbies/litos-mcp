@@ -1,12 +1,23 @@
 # Litos MCP
 
-A local MCP server that helps coding agents find code with fewer tokens. Instead of grepping the repo or reading whole files, agents search a **structural skeleton index** (symbols, kinds, scopes, line ranges) and read only the slices they need.
+> Search · read by ID · callers · map · check · CLI — local structural navigation for coding agents
+
+A local **MCP server and CLI** that gives coding agents structural sight over your repo—without the grep > read whole file > grep again loop.
+
+Litos indexes definitions into a SQLite cache (`.lcn_cache.db`) at the project root: symbols, scopes, line ranges, and call sites. Agents **search** by keyword, **read** exact symbols by stable ID, **trace callers**, **sketch a directory**, and **check syntax** after edits—all from compact JSON hits instead of scrolling grep output or loading entire files.
+
+It ships as a **single Go binary** (MCP over stdio + matching CLI subcommands). Everything stays on your machine: no cloud API, no embeddings, no telemetry.
 
 ## What is this?
 
-Litos MCP indexes your repository into a small SQLite database (`.lcn_cache.db`) at the project root. It extracts definitions—functions, types, classes, interfaces—not full source bodies. Agents query that index through MCP tools, get back compact JSON hits (~10 results by default), then pull targeted line ranges.
+Litos is a **local code navigation layer** for AI coding agents—not semantic search, not an LSP. It pre-indexes your repo and exposes tools to:
 
-It runs as a **single Go binary** over stdio inside Cursor, Claude Code, and other MCP hosts. Everything stays on your machine: no cloud API, no embeddings service, no telemetry.
+- **Discover** — FTS keyword search, exact name lookup, file outlines, directory maps
+- **Fetch** — `read_symbol` by stable `symbol_id` (byte-precise with optional tree-sitter)
+- **Trace** — `find_callers` for name-based call-site lookup
+- **Validate** — `check_file` for post-edit syntax (tree-sitter build)
+
+Optional [Universal Ctags](https://github.com/universal-ctags/ctags) broadens language coverage; build with `-tags treesitter` for precise boundaries and syntax check on Go, TS/JS, and Python.
 
 ## Why use it?
 
@@ -54,11 +65,25 @@ After large tree changes (`git pull`, branch switch), call **`reindex_index`** o
 
 ## Install
 
+### Install from release (recommended)
+
+1. Download the archive for your OS/arch from [GitHub Releases](https://github.com/stubbies/litos-mcp/releases).
+2. Extract and place `litos-mcp` on your `PATH`.
+3. Verify: `litos-mcp version` — expect `boundary: tree-sitter (go, ts, py)` and a semver version (e.g. `litos-mcp 1.0.0`).
+
+Release binaries include tree-sitter (precise reads, syntax check). Tags use a `v` prefix (`v1.0.0`); the injected version omits it (`1.0.0`).
+
+### Install with go install (pure Go)
+
+For a slim build without CGO or tree-sitter:
+
 ```bash
 go install github.com/stubbies/litos-mcp/cmd/litos-mcp@latest
 ```
 
-Or build from source:
+This path does not include `-tags treesitter`; you get line-range reads and regex callers unless you build from source with CGO (see below).
+
+### Build from source
 
 ```bash
 git clone https://github.com/stubbies/litos-mcp.git
@@ -160,7 +185,7 @@ Crawl discovers many file types, but the regex indexer only extracts symbols fro
    - `check_file` — post-edit syntax check for Go, TS/JS, and Python via tree-sitter; returns `{ "ok": true/false, "errors": [...] }`; requires a `-tags treesitter` build
    - `reindex_index` — full index rebuild after large changes (e.g. `git pull`); normal saves sync automatically
    - **`litos://index/status`** (MCP resource) — JSON sync status: file/symbol/`call_sites` counts, indexer, `boundary_indexer` (`treesitter` or `none`), `callers_indexer` (`treesitter` or `regex`), `reconcile_needed`
-   - **`code_discovery_workflow`** (MCP prompt) — onboarding text for agents: map → discover → read → find callers → check edits → iterate
+   - **`code_discovery_workflow`** (MCP prompt) — onboarding text for agents: map > discover > read > find callers > check edits > iterate
 
 `litos-mcp serve` auto-runs `init` when the cache is missing, then **hydrates** the index on startup (stat pass + boot crawl) and keeps it fresh with a **filesystem watcher** for debounced per-file updates. Search calls run a lightweight staleness check before FTS.
 
@@ -230,7 +255,7 @@ Syntax checking requires a **`-tags treesitter`** build (CGO). Without it, the t
 
 ### Claude Code (recommended)
 
-Add **`CLAUDE.md`** at the project root with the same discovery workflow (map → discover → `read_symbol` → `find_callers` → `check_file` → grep fallback). The MCP prompt **`code_discovery_workflow`** is available in Claude Code when the server is connected.
+Add **`CLAUDE.md`** at the project root with the same discovery workflow (map > discover > `read_symbol` > `find_callers` > `check_file` > grep fallback). The MCP prompt **`code_discovery_workflow`** is available in Claude Code when the server is connected.
 
 After edits, call **`check_file`** on changed Go/TS/Python files when using a tree-sitter build; otherwise wait for fsnotify debounce (~300ms) or run a second search. Use **`reindex_index`** after `git pull`. If `read_symbol` reports a stale ID, re-search or re-outline to get a fresh `symbol_id`. If `find_callers` returns no hits, re-search to confirm the callee name.
 

@@ -1,3 +1,5 @@
 /bin/
 .lcn_cache.db*
 /litos-mcp
+/dist/
+/release-artifacts/

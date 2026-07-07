@@ -1,0 +1,77 @@
+version: 2
+
+project_name: litos-mcp
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: litos-mcp-linux
+    main: ./cmd/litos-mcp
+    binary: litos-mcp
+    skip: '{{ and (ne .Env.GORELEASER_TARGET "") (ne .Env.GORELEASER_TARGET "linux") }}'
+    tags:
+      - treesitter
+    flags:
+      - -trimpath
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/stubbies/litos-mcp/internal/version.Version={{.Version}}
+    overrides:
+      - goos: linux
+        goarch: arm64
+        env:
+          - CGO_ENABLED=1
+          - CC=aarch64-linux-gnu-gcc
+          - CXX=aarch64-linux-gnu-g++
+
+  - id: litos-mcp-darwin
+    main: ./cmd/litos-mcp
+    binary: litos-mcp
+    skip: '{{ and (ne .Env.GORELEASER_TARGET "") (ne .Env.GORELEASER_TARGET "darwin") }}'
+    tags:
+      - treesitter
+    flags:
+      - -trimpath
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/stubbies/litos-mcp/internal/version.Version={{.Version}}
+
+archives:
+  - id: default
+    name_template: litos-mcp_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  github:
+    owner: stubbies
+    name: litos-mcp
+  draft: false
+  prerelease: auto
+
+changelog:
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^chore:'
