@@ -94,6 +94,7 @@ jobs:
           fi
           cp "${files[@]}" release-artifacts/
           ls -la release-artifacts/
+          rm -rf dist-linux dist-darwin
 
       - uses: goreleaser/goreleaser-action@v6
         with:

@@ -2,4 +2,6 @@
 .lcn_cache.db*
 /litos-mcp
 /dist/
+/dist-linux/
+/dist-darwin/
 /release-artifacts/
