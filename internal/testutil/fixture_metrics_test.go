@@ -54,6 +54,36 @@ func TestInit_SymbolCount(t *testing.T) {
 	testutil.AssertMinInt(t, "symbols_indexed", m.SymbolsIndexedMin, symbols)
 }
 
+func TestFixtureMapDirectory_Handlers(t *testing.T) {
+	_, st, m := freshFixture(t)
+	result, err := st.MapDirectory(m.Map.HandlersDir, 50, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.AssertMinInt(t, "handlers_defs", m.Map.DefsMin, result.DefinitionCount)
+
+	var handleCharge bool
+	for _, def := range result.Definitions {
+		if def.Symbol == m.Map.HandleChargeSymbol {
+			handleCharge = true
+			break
+		}
+	}
+	if !handleCharge {
+		t.Fatalf("HandleCharge not in definitions: %+v", result.Definitions)
+	}
+
+	callees := make(map[string]bool)
+	for _, call := range result.OutgoingCalls {
+		callees[call.CalleeName] = true
+	}
+	for _, want := range m.Map.OutgoingCallees {
+		if !callees[want] {
+			t.Fatalf("outgoing calls missing %q; got %+v", want, result.OutgoingCalls)
+		}
+	}
+}
+
 func TestFixtureFindCallers_ProcessPayment(t *testing.T) {
 	_, st, m := freshFixture(t)
 	hits, err := st.FindCallers("ProcessPayment", "", 20)
@@ -237,6 +267,20 @@ func TestMetrics_CallersTokenBudget(t *testing.T) {
 	}
 	tokens := testutil.EstimateTokens(string(data))
 	testutil.AssertMaxInt(t, "callers_token_budget", m.Thresholds.CallersTokenBudget, tokens)
+}
+
+func TestMetrics_MapTokenBudget(t *testing.T) {
+	_, st, m := freshFixture(t)
+	result, err := st.MapDirectory(m.Map.HandlersDir, 50, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens := testutil.EstimateTokens(string(data))
+	testutil.AssertMaxInt(t, "map_token_budget", m.Thresholds.MapTokenBudget, tokens)
 }
 
 func TestMetrics_SearchTokenBudget(t *testing.T) {
@@ -472,6 +516,71 @@ func TestInit_SummaryOutput(t *testing.T) {
 		}
 		if diff > tolerance {
 			t.Fatalf("init db_bytes = %d, want within %.0f%% of %d", dbBytes, tolerance*100, int(wantBytes))
+		}
+	}
+}
+
+func TestMCP_FixtureMapDirectory(t *testing.T) {
+	root, st, m := freshFixture(t)
+	reader := testutil.NewReader(t, root)
+	_, session, cleanup := connectMCPSession(t, root, st, reader)
+	defer cleanup()
+
+	text := callToolText(t, session, "map_directory", map[string]any{
+		"dir": m.Map.HandlersDir,
+	})
+	var result map[string]any
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	for _, key := range []string{"dir", "definitions", "outgoing_calls", "definition_count", "outgoing_call_count"} {
+		if _, ok := result[key]; !ok {
+			t.Fatalf("missing key %q", key)
+		}
+	}
+	if result["dir"] != m.Map.HandlersDir {
+		t.Fatalf("dir = %v, want %q", result["dir"], m.Map.HandlersDir)
+	}
+
+	defs, ok := result["definitions"].([]any)
+	if !ok {
+		t.Fatalf("definitions is not array: %T", result["definitions"])
+	}
+	testutil.AssertMinInt(t, "handlers_defs", m.Map.DefsMin, int(result["definition_count"].(float64)))
+
+	var handleCharge bool
+	for _, d := range defs {
+		entry, ok := d.(map[string]any)
+		if !ok {
+			continue
+		}
+		if entry["symbol"] == m.Map.HandleChargeSymbol {
+			handleCharge = true
+			break
+		}
+	}
+	if !handleCharge {
+		t.Fatalf("HandleCharge not in definitions: %+v", defs)
+	}
+
+	calls, ok := result["outgoing_calls"].([]any)
+	if !ok {
+		t.Fatalf("outgoing_calls is not array: %T", result["outgoing_calls"])
+	}
+	callees := make(map[string]bool)
+	for _, c := range calls {
+		entry, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, ok := entry["callee_name"].(string); ok {
+			callees[name] = true
+		}
+	}
+	for _, want := range m.Map.OutgoingCallees {
+		if !callees[want] {
+			t.Fatalf("outgoing calls missing %q; got %+v", want, calls)
 		}
 	}
 }

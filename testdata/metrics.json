@@ -26,9 +26,18 @@
     },
     "process_payment_min_hits": 1
   },
+  "map": {
+    "handlers_dir": "src/handlers",
+    "handle_charge_symbol": "HandleCharge",
+    "outgoing_callees": ["ProcessPayment", "RefundPayment"],
+    "defs_min": 3
+  },
   "thresholds": {
     "search_token_budget": 600,
     "callers_token_budget": 300,
+    "map_token_budget": 1000,
+    "check_token_budget": 200,
+    "grep_vs_litos_ratio_max": 0.5,
     "read_token_budget": 400,
     "read_vs_whole_file_ratio_max": 0.2,
     "index_size_bytes_max": 512000,

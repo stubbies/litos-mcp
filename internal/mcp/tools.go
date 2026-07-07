@@ -9,6 +9,8 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stubbies/litos-mcp/internal/index"
+	"github.com/stubbies/litos-mcp/internal/index/treesitter"
+	"github.com/stubbies/litos-mcp/internal/query"
 	"github.com/stubbies/litos-mcp/internal/read"
 	"github.com/stubbies/litos-mcp/internal/store"
 )
@@ -28,6 +30,12 @@ const (
 	findCallersToolDescription = "Finds indexed call sites for a callee by exact name (case-sensitive, no type resolution). " +
 		"Pass name or symbol_id from search_code_skeleton. Use dir to limit to a repo-relative directory prefix. " +
 		"If no hits, the indexed callee name may differ — try search_code_skeleton first."
+	mapDirectoryToolDescription = "Returns a directory architecture sketch: indexed symbol definitions and outgoing calls " +
+		"under a repo-relative directory prefix, without reading file bodies. " +
+		"Use when exploring a subsystem before drilling into individual symbols with outline_file or read_symbol."
+	checkFileToolDescription = "Checks a file for syntax errors using tree-sitter (Go, TS/JS, Python). " +
+		"Call after editing a file; if ok is false, fix reported errors before proceeding. " +
+		"Requires a tree-sitter build."
 )
 
 type searchInput struct {
@@ -63,6 +71,16 @@ type findCallersInput struct {
 	SymbolID string `json:"symbol_id,omitempty" jsonschema:"Parse callee name from a search_code_skeleton symbol_id when name is omitted."`
 	Dir      string `json:"dir,omitempty" jsonschema:"Optional repo-relative directory prefix filter."`
 	Limit    int    `json:"limit,omitempty" jsonschema:"Maximum caller hits to return (default 20)."`
+}
+
+type mapDirectoryInput struct {
+	Dir       string `json:"dir" jsonschema:"Repo-relative directory prefix (e.g. src/handlers)."`
+	DefLimit  int    `json:"def_limit,omitempty" jsonschema:"Maximum symbol definitions to return (default 50)."`
+	CallLimit int    `json:"call_limit,omitempty" jsonschema:"Maximum outgoing call entries to return (default 50)."`
+}
+
+type checkFileInput struct {
+	FilePath string `json:"file_path" jsonschema:"Repo-relative file path from repo root."`
 }
 
 type toolEnv struct {
@@ -101,28 +119,27 @@ func registerTools(server *mcpsdk.Server, env *toolEnv) {
 		Name:        "find_callers",
 		Description: findCallersToolDescription,
 	}, env.handleFindCallers)
+
+	mcpsdk.AddTool(server, &mcpsdk.Tool{
+		Name:        "map_directory",
+		Description: mapDirectoryToolDescription,
+	}, env.handleMapDirectory)
+
+	mcpsdk.AddTool(server, &mcpsdk.Tool{
+		Name:        "check_file",
+		Description: checkFileToolDescription,
+	}, env.handleCheckFile)
 }
 
 func (e *toolEnv) handleSearch(ctx context.Context, _ *mcpsdk.CallToolRequest, in searchInput) (*mcpsdk.CallToolResult, any, error) {
-	if in.Query == "" {
-		return searchResult([]store.SearchHit{})
-	}
-
-	if e.coordinator != nil {
-		e.coordinator.EnsureFresh(ctx)
-	}
-
-	limit := in.Limit
-	if limit <= 0 {
-		limit = 10
-	}
-
-	hits, err := e.store.SearchWithOptions(in.Query, limit, store.SearchOptions{
+	hits, err := query.Search(ctx, e.store, e.coordinator, query.SearchOpts{
+		Query:     in.Query,
+		Limit:     in.Limit,
 		MatchMode: in.MatchMode,
 		NameMatch: in.NameMatch,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("search index: %w", err)
+		return nil, nil, err
 	}
 	return searchResult(hits)
 }
@@ -176,32 +193,91 @@ func (e *toolEnv) handleRead(_ context.Context, _ *mcpsdk.CallToolRequest, in re
 }
 
 func (e *toolEnv) handleFindCallers(ctx context.Context, _ *mcpsdk.CallToolRequest, in findCallersInput) (*mcpsdk.CallToolResult, any, error) {
-	name := strings.TrimSpace(in.Name)
-	if name == "" && in.SymbolID != "" {
-		rec, err := store.ParseSymbolID(in.SymbolID)
-		if err != nil {
+	result, err := query.FindCallers(ctx, e.store, e.coordinator, query.FindCallersOpts{
+		Name:     in.Name,
+		SymbolID: in.SymbolID,
+		Dir:      in.Dir,
+		Limit:    in.Limit,
+	})
+	if err != nil {
+		if errors.Is(err, query.ErrNoCallers) {
+			return &mcpsdk.CallToolResult{
+				IsError: true,
+				Content: []mcpsdk.Content{&mcpsdk.TextContent{
+					Text: query.NoCallersMessage(result.CalleeName),
+				}},
+			}, nil, nil
+		}
+		if errors.Is(err, store.ErrInvalidSymbolID) {
 			return nil, nil, mapSymbolError(in.SymbolID, err)
 		}
-		name = rec.Name
+		return nil, nil, err
 	}
-	if name == "" {
-		return nil, nil, fmt.Errorf("name or symbol_id is required")
-	}
+	return callersResult(result.CalleeName, result.Hits)
+}
 
-	if e.coordinator != nil {
-		e.coordinator.EnsureFresh(ctx)
-	}
-
-	limit := in.Limit
-	if limit <= 0 {
-		limit = 20
-	}
-
-	hits, err := e.store.FindCallers(name, in.Dir, limit)
+func (e *toolEnv) handleMapDirectory(ctx context.Context, _ *mcpsdk.CallToolRequest, in mapDirectoryInput) (*mcpsdk.CallToolResult, any, error) {
+	result, err := query.MapDirectory(ctx, e.store, e.coordinator, query.MapDirectoryOpts{
+		Dir:       in.Dir,
+		DefLimit:  in.DefLimit,
+		CallLimit: in.CallLimit,
+	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("find callers: %w", err)
+		return nil, nil, err
 	}
-	return callersResult(name, hits)
+	return mapDirectoryResult(result)
+}
+
+func (e *toolEnv) handleCheckFile(ctx context.Context, _ *mcpsdk.CallToolRequest, in checkFileInput) (*mcpsdk.CallToolResult, any, error) {
+	result, err := query.CheckFile(ctx, e.reader.Root(), in.FilePath)
+	if err != nil {
+		if errors.Is(err, query.ErrSyntaxCheckUnavailable) {
+			return nil, nil, err
+		}
+		return nil, nil, mapCheckFileError(err)
+	}
+	return checkFileResult(result)
+}
+
+func mapCheckFileError(err error) error {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "file not found"):
+		return fmt.Errorf("file not found")
+	case strings.Contains(msg, "unsupported file extension"):
+		return fmt.Errorf("unsupported file extension for syntax check")
+	default:
+		return err
+	}
+}
+
+func checkFileResult(result query.CheckFileResult) (*mcpsdk.CallToolResult, any, error) {
+	if result.Errors == nil {
+		result.Errors = []treesitter.ParseError{}
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal check file results: %w", err)
+	}
+	return &mcpsdk.CallToolResult{
+		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: string(data)}},
+	}, nil, nil
+}
+
+func mapDirectoryResult(result store.DirectoryMap) (*mcpsdk.CallToolResult, any, error) {
+	if result.Definitions == nil {
+		result.Definitions = []store.OutlineEntry{}
+	}
+	if result.OutgoingCalls == nil {
+		result.OutgoingCalls = []store.OutgoingCallEntry{}
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal map directory results: %w", err)
+	}
+	return &mcpsdk.CallToolResult{
+		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: string(data)}},
+	}, nil, nil
 }
 
 func callersResult(name string, hits []store.CallerHit) (*mcpsdk.CallToolResult, any, error) {
@@ -226,22 +302,9 @@ func callersResult(name string, hits []store.CallerHit) (*mcpsdk.CallToolResult,
 }
 
 func (e *toolEnv) handleOutline(ctx context.Context, _ *mcpsdk.CallToolRequest, in outlineInput) (*mcpsdk.CallToolResult, any, error) {
-	if in.FilePath == "" {
-		return nil, nil, fmt.Errorf("file_path is required")
-	}
-
-	if e.coordinator != nil {
-		e.coordinator.EnsureFresh(ctx)
-	}
-
-	symbols, err := e.store.ListSymbolsByFile(in.FilePath)
+	entries, err := query.Outline(ctx, e.store, e.coordinator, in.FilePath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("outline file: %w", err)
-	}
-
-	entries := make([]store.OutlineEntry, 0, len(symbols))
-	for _, sym := range symbols {
-		entries = append(entries, store.OutlineEntryFromRecord(sym))
+		return nil, nil, err
 	}
 	return outlineResult(entries)
 }
@@ -260,21 +323,15 @@ func outlineResult(entries []store.OutlineEntry) (*mcpsdk.CallToolResult, any, e
 }
 
 func (e *toolEnv) handleReadSymbol(ctx context.Context, _ *mcpsdk.CallToolRequest, in readSymbolInput) (*mcpsdk.CallToolResult, any, error) {
-	if in.SymbolID == "" {
-		return nil, nil, fmt.Errorf("symbol_id is required")
-	}
-
 	if e.coordinator != nil {
 		e.coordinator.EnsureFresh(ctx)
 	}
 
-	sym, err := e.store.GetSymbolByID(in.SymbolID)
+	text, err := query.ReadSymbol(ctx, e.store, e.reader, in.SymbolID)
 	if err != nil {
-		return nil, nil, mapSymbolError(in.SymbolID, err)
-	}
-
-	text, err := e.reader.ReadSymbol(sym)
-	if err != nil {
+		if errors.Is(err, store.ErrInvalidSymbolID) || errors.Is(err, store.ErrSymbolNotFound) {
+			return nil, nil, mapSymbolError(in.SymbolID, err)
+		}
 		return nil, nil, mapReadError(err)
 	}
 	return &mcpsdk.CallToolResult{

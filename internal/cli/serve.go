@@ -6,8 +6,6 @@ import (
 	"os"
 
 	litosmcp "github.com/stubbies/litos-mcp/internal/mcp"
-	"github.com/stubbies/litos-mcp/internal/index"
-	"github.com/stubbies/litos-mcp/internal/read"
 	"github.com/stubbies/litos-mcp/internal/repo"
 	"github.com/stubbies/litos-mcp/internal/store"
 	"github.com/stubbies/litos-mcp/internal/version"
@@ -30,22 +28,14 @@ func runServe(args []string) error {
 		}
 	}
 
-	st, err := store.Open(repoRoot)
+	env, err := openRepoAt(repoRoot)
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-
-	reader, err := read.New(repoRoot)
-	if err != nil {
-		return fmt.Errorf("create line reader: %w", err)
-	}
-
-	ext := index.NewExtractor()
-	coord := index.NewSyncCoordinator(repoRoot, st, ext)
+	defer env.close()
 
 	ctx := context.Background()
-	elapsed, err := coord.Hydrate(ctx)
+	elapsed, err := env.coordinator.Hydrate(ctx)
 	if err != nil {
 		return fmt.Errorf("hydrate index: %w", err)
 	}
@@ -53,9 +43,9 @@ func runServe(args []string) error {
 
 	return litosmcp.Run(ctx, litosmcp.Config{
 		RepoRoot:    repoRoot,
-		Store:       st,
-		Reader:      reader,
+		Store:       env.store,
+		Reader:      env.reader,
 		Version:     version.Version,
-		Coordinator: coord,
+		Coordinator: env.coordinator,
 	})
 }

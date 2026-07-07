@@ -135,6 +135,23 @@ type CallSiteRecord struct {
 	EnclosingScope string
 }
 
+// DirectoryMap is a directory-level architecture sketch: definitions and outgoing calls.
+type DirectoryMap struct {
+	Dir               string             `json:"dir"`
+	Definitions       []OutlineEntry     `json:"definitions"`
+	OutgoingCalls     []OutgoingCallEntry `json:"outgoing_calls"`
+	DefinitionCount   int                `json:"definition_count"`
+	OutgoingCallCount int                `json:"outgoing_call_count"`
+}
+
+// OutgoingCallEntry is a callee invocation originating from files under a directory prefix.
+type OutgoingCallEntry struct {
+	CalleeName        string `json:"callee_name"`
+	FilePath          string `json:"file_path"`
+	Line              int    `json:"line"`
+	EnclosingSymbolID string `json:"enclosing_symbol_id,omitempty"`
+}
+
 // CallerHit is a JSON-serializable find_callers result.
 type CallerHit struct {
 	CalleeName        string `json:"callee_name"`

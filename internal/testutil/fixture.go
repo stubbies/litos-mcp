@@ -44,9 +44,18 @@ type GoldenMetrics struct {
 		} `json:"process_payment"`
 		ProcessPaymentMinHits int `json:"process_payment_min_hits"`
 	} `json:"callers"`
+	Map struct {
+		HandlersDir        string   `json:"handlers_dir"`
+		HandleChargeSymbol string   `json:"handle_charge_symbol"`
+		OutgoingCallees    []string `json:"outgoing_callees"`
+		DefsMin            int      `json:"defs_min"`
+	} `json:"map"`
 	Thresholds struct {
 		SearchTokenBudget        int     `json:"search_token_budget"`
 		CallersTokenBudget       int     `json:"callers_token_budget"`
+		MapTokenBudget           int     `json:"map_token_budget"`
+		CheckTokenBudget         int     `json:"check_token_budget"`
+		GrepVsLitosRatioMax      float64 `json:"grep_vs_litos_ratio_max"`
 		ReadTokenBudget            int     `json:"read_token_budget"`
 		ReadVsWholeFileRatioMax    float64 `json:"read_vs_whole_file_ratio_max"`
 		IndexSizeBytesMax          int     `json:"index_size_bytes_max"`

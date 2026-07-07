@@ -398,6 +398,162 @@ func (s *Store) FindCallers(name string, dir string, limit int) ([]CallerHit, er
 	return hits, nil
 }
 
+// MapDirectory returns symbol definitions and outgoing calls under a repo-relative directory prefix.
+func (s *Store) MapDirectory(dir string, defLimit, callLimit int) (DirectoryMap, error) {
+	dir = strings.Trim(strings.TrimSpace(dir), "/")
+	if dir == "" {
+		return DirectoryMap{}, fmt.Errorf("dir is required")
+	}
+	if defLimit <= 0 {
+		defLimit = 50
+	}
+	if callLimit <= 0 {
+		callLimit = 50
+	}
+
+	where, args := dirPrefixWhere(dir)
+
+	definitions, err := s.mapDirectoryDefinitions(where, args, defLimit)
+	if err != nil {
+		return DirectoryMap{}, err
+	}
+	defCount, err := s.countDirRows("symbols", where, args)
+	if err != nil {
+		return DirectoryMap{}, err
+	}
+
+	outgoing, err := s.mapDirectoryOutgoingCalls(where, args, callLimit)
+	if err != nil {
+		return DirectoryMap{}, err
+	}
+	callCount, err := s.countDirDistinctCallSites(where, args)
+	if err != nil {
+		return DirectoryMap{}, err
+	}
+
+	if definitions == nil {
+		definitions = []OutlineEntry{}
+	}
+	if outgoing == nil {
+		outgoing = []OutgoingCallEntry{}
+	}
+
+	return DirectoryMap{
+		Dir:               dir,
+		Definitions:       definitions,
+		OutgoingCalls:     outgoing,
+		DefinitionCount:   defCount,
+		OutgoingCallCount: callCount,
+	}, nil
+}
+
+func dirPrefixWhere(dir string) (string, []any) {
+	prefix := dir + "/"
+	return `(file_path = ? OR file_path LIKE ? ESCAPE '\')`, []any{dir, escapeLike(prefix) + "%"}
+}
+
+func (s *Store) mapDirectoryDefinitions(where string, args []any, limit int) ([]OutlineEntry, error) {
+	sql := fmt.Sprintf(`
+		SELECT name, file_path, kind, scope, start_line, end_line
+		FROM symbols
+		WHERE %s
+		ORDER BY file_path, start_line
+		LIMIT ?
+	`, where)
+	queryArgs := append(append([]any{}, args...), limit)
+
+	rows, err := s.db.Query(sql, queryArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("map directory definitions: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []OutlineEntry
+	for rows.Next() {
+		var rec SymbolRecord
+		if err := rows.Scan(&rec.Name, &rec.FilePath, &rec.Kind, &rec.Scope, &rec.StartLine, &rec.EndLine); err != nil {
+			return nil, fmt.Errorf("scan map definition: %w", err)
+		}
+		entries = append(entries, OutlineEntryFromRecord(rec))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate map definitions: %w", err)
+	}
+	return entries, nil
+}
+
+func (s *Store) mapDirectoryOutgoingCalls(where string, args []any, limit int) ([]OutgoingCallEntry, error) {
+	sql := fmt.Sprintf(`
+		SELECT callee_name, file_path, line,
+			MIN(col), MIN(enclosing_name), MIN(enclosing_kind), MIN(enclosing_scope)
+		FROM call_sites
+		WHERE %s
+		GROUP BY callee_name, file_path, line
+		ORDER BY file_path, line
+		LIMIT ?
+	`, where)
+	queryArgs := append(append([]any{}, args...), limit)
+
+	rows, err := s.db.Query(sql, queryArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("map directory outgoing calls: %w", err)
+	}
+	defer rows.Close()
+
+	var calls []OutgoingCallEntry
+	for rows.Next() {
+		var (
+			calleeName, filePath, enclosingName, enclosingKind, enclosingScope string
+			line, col                                                          int
+		)
+		if err := rows.Scan(&calleeName, &filePath, &line, &col, &enclosingName, &enclosingKind, &enclosingScope); err != nil {
+			return nil, fmt.Errorf("scan map outgoing call: %w", err)
+		}
+
+		entry := OutgoingCallEntry{
+			CalleeName: calleeName,
+			FilePath:   filePath,
+			Line:       line,
+		}
+		if enclosingName != "" {
+			id, err := s.resolveEnclosingSymbolID(filePath, enclosingName, enclosingKind, enclosingScope, line)
+			if err != nil {
+				return nil, err
+			}
+			entry.EnclosingSymbolID = id
+		}
+		calls = append(calls, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate map outgoing calls: %w", err)
+	}
+	return calls, nil
+}
+
+func (s *Store) countDirRows(table, where string, args []any) (int, error) {
+	sql := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE %s`, table, where)
+	var n int
+	if err := s.db.QueryRow(sql, args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count %s rows: %w", table, err)
+	}
+	return n, nil
+}
+
+func (s *Store) countDirDistinctCallSites(where string, args []any) (int, error) {
+	sql := fmt.Sprintf(`
+		SELECT COUNT(*) FROM (
+			SELECT DISTINCT callee_name, file_path, line
+			FROM call_sites
+			WHERE %s
+		)
+	`, where)
+	var n int
+	if err := s.db.QueryRow(sql, args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count distinct call sites: %w", err)
+	}
+	return n, nil
+}
+
 // InsertCallSite inserts a single call site row without resolving enclosing symbols. For tests only.
 func (s *Store) InsertCallSite(rec CallSiteRecord) error {
 	s.mu.Lock()

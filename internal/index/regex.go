@@ -110,10 +110,16 @@ func (e *RegexExtractor) extractFile(absPath, relPath string, patterns []langPat
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	var symbols []store.SymbolRecord
+	var prevComment string
 	lineNum := 0
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//") {
+			prevComment = strings.TrimSpace(strings.TrimPrefix(trimmed, "//"))
+			continue
+		}
 		for _, lp := range patterns {
 			m := lp.pattern.FindStringSubmatch(line)
 			if m == nil || len(m) < 2 {
@@ -127,9 +133,10 @@ func (e *RegexExtractor) extractFile(absPath, relPath string, patterns []langPat
 				Name:      name,
 				FilePath:  relPath,
 				Kind:      lp.kind,
-				Scope:     "",
+				Scope:     prevComment,
 				StartLine: lineNum,
 			})
+			prevComment = ""
 			break
 		}
 	}

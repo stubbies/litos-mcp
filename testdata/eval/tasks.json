@@ -1,0 +1,19 @@
+[
+  {
+    "id": "locate_process_payment",
+    "query": "payment processing",
+    "expect_symbol": "ProcessPayment",
+    "expect_file": "src/billing/billing.go"
+  },
+  {
+    "id": "trace_process_payment_callers",
+    "callee": "ProcessPayment",
+    "expect_enclosing": "HandleCharge"
+  },
+  {
+    "id": "map_handlers_package",
+    "dir": "src/handlers",
+    "expect_defs_min": 3,
+    "expect_outgoing_contains": "ProcessPayment"
+  }
+]

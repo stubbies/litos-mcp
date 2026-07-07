@@ -5,13 +5,16 @@ alwaysApply: true
 
 # Code discovery with litos-mcp
 
-When litos-mcp is connected (search_code_skeleton, outline_file, read_symbol, read_file_lines):
+When litos-mcp is connected (search_code_skeleton, outline_file, read_symbol, read_file_lines, find_callers, map_directory, check_file):
 
-1. Keyword discovery — search_code_skeleton with functional keywords from the task.
-2. Known symbol name — search_code_skeleton with name_match "exact" (case-sensitive) or "contains".
-3. Known file — outline_file to list symbols and symbol_ids in that file.
-4. Fetch — read_symbol(symbol_id) from search or outline hits; read_file_lines only as fallback.
-5. Do not use grep, ripgrep, or Read on entire source files for discovery when litos tools are available.
-6. Use grep or full-file reads only when litos returns no hits or you need exact regex/string matches.
+1. Subsystem sketch — map_directory with a repo-relative dir prefix when exploring a package before reading bodies.
+2. Keyword discovery — search_code_skeleton with functional keywords from the task.
+3. Known symbol name — search_code_skeleton with name_match "exact" (case-sensitive) or "contains".
+4. Known file — outline_file to list symbols and symbol_ids in that file.
+5. Fetch — read_symbol(symbol_id) from search, outline, or map hits; read_file_lines only as fallback.
+6. Find callers — find_callers(name) or find_callers(symbol_id) after reading a symbol; use enclosing_symbol_id to read_symbol on callers and iterate.
+7. Validate edits — check_file(file_path) after editing Go, TS/JS, or Python source when using a tree-sitter build.
+8. Do not use grep, ripgrep, or Read on entire source files for discovery when litos tools are available.
+9. Use grep or full-file reads only when litos returns no hits or you need exact regex/string matches.
 
-Refine search queries using symbol names, kinds, scopes, matched_in, and symbol_id from prior hits. Re-search after edits if read_symbol reports a stale symbol_id.
+Refine search queries using symbol names, kinds, scopes, matched_in, and symbol_id from prior hits. Re-search after edits if read_symbol reports a stale symbol_id. If find_callers returns no hits, try search_code_skeleton to confirm the callee name.

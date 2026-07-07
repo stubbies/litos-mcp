@@ -52,7 +52,7 @@ func NewBillingService(ledger Ledger, clock Clock) *BillingService {
 	return &BillingService{ledger: ledger, clock: clock}
 }
 
-// ProcessPayment validates and records a customer payment.
+// ProcessPayment validates and records payment processing for a customer charge.
 func ProcessPayment(svc *BillingService, req PaymentRequest) (*PaymentResult, error) {
 	if req.Amount <= 0 {
 		return nil, errors.New("amount must be positive")

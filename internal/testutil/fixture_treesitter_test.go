@@ -3,6 +3,7 @@
 package testutil_test
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stubbies/litos-mcp/internal/index"
+	"github.com/stubbies/litos-mcp/internal/query"
 	"github.com/stubbies/litos-mcp/internal/read"
 	"github.com/stubbies/litos-mcp/internal/store"
 	"github.com/stubbies/litos-mcp/internal/testutil"
@@ -119,6 +121,20 @@ func TestMetrics_ReadSymbolTokenBudget(t *testing.T) {
 	}
 	tokens := testutil.EstimateTokens(text)
 	testutil.AssertMaxInt(t, "read_token_budget", m.Thresholds.ReadTokenBudget, tokens)
+}
+
+func TestMetrics_CheckFileTokenBudget(t *testing.T) {
+	root, _, m := freshFixtureTreesitter(t)
+	result, err := query.CheckFile(context.Background(), root, "src/billing/billing.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens := testutil.EstimateTokens(string(data))
+	testutil.AssertMaxInt(t, "check_token_budget", m.Thresholds.CheckTokenBudget, tokens)
 }
 
 func TestFixtureFindCallers_TreesitterSkipsDeclarationFalsePositive(t *testing.T) {
