@@ -228,7 +228,7 @@ The MCP server exposes a **`code_discovery_workflow`** prompt with the same guid
 
 ### find_callers limitations
 
-Call-site indexing is **name-based** (Grove-honest): `billing.ProcessPayment(...)` is indexed as callee `ProcessPayment`. There is no import-path, receiver, or type resolution.
+Call-site indexing is **name-based only**: `billing.ProcessPayment(...)` is indexed as callee `ProcessPayment`. There is no import-path, receiver, or type resolution.
 
 - **Exact name only** — case-sensitive match on the callee identifier at the call site
 - **Homonyms** — symbols with the same name in different packages may all appear in results; narrow with the optional `dir` prefix filter
@@ -242,7 +242,7 @@ If `find_callers` returns no hits, the indexed callee name may differ from what 
 Directory maps are composed at query time from the `symbols` and `call_sites` tables — no separate index.
 
 - **Outgoing calls only** — shows calls *made from* files under the directory prefix, not incoming references to symbols defined there
-- **Name-based calls** — same Grove-honest callee names as `find_callers` (no import or type resolution)
+- **Name-based calls** — same name-only callee names as `find_callers` (no import or type resolution)
 - **Limits** — default 50 definitions and 50 outgoing call entries; raise with `def_limit` / `call_limit` when needed
 
 ### check_file limitations
@@ -320,7 +320,7 @@ Fixture repo: `testdata/fixture-repo/` with expectations in `testdata/metrics.js
 
 ### Eval harness
 
-Lightweight fixture task suite inspired by [is-grep-enough](https://github.com/Entelligentsia/is-grep-enough): asserts that Litos query paths reach the right symbol, caller, or directory map with bounded token cost — not a full agent replay.
+Lightweight fixture task suite: asserts that Litos query paths reach the right symbol, caller, or directory map with bounded token cost — not a full agent replay.
 
 Tasks live in `testdata/eval/tasks.json`. `internal/eval/eval_test.go` runs each task via `internal/query` (not MCP stdio) and checks:
 
