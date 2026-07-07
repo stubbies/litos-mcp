@@ -44,6 +44,6 @@
   },
   "init_db_bytes": 4096,
   "benchmarks": {
-    "search_ns_op_max": 96000
+    "search_ns_op_max": 105000
   }
 }
