@@ -36,7 +36,7 @@ func runVersion(args []string) error {
 	}
 	fmt.Printf("boundary: %s\n", index.BoundaryDescription())
 	fmt.Printf("callers: %s\n", index.CallersIndexer())
-	fmt.Println("cli: init serve version search outline read-symbol find-callers map-dir check")
+	fmt.Println("cli: init clean serve version search outline read-symbol find-callers map-dir check")
 	return nil
 }
 

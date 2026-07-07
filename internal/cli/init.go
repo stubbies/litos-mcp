@@ -7,7 +7,6 @@ import (
 	"os"
 
 	"github.com/stubbies/litos-mcp/internal/index"
-	"github.com/stubbies/litos-mcp/internal/repo"
 	"github.com/stubbies/litos-mcp/internal/store"
 )
 
@@ -19,16 +18,15 @@ func runInit(args []string) error {
 		return err
 	}
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("get working directory: %w", err)
-	}
-
-	repoRoot, err := repo.ResolveRoot(cwd, *rootFlag)
+	repoRoot, err := resolveRepoRoot(*rootFlag)
 	if err != nil {
 		return err
 	}
 
+	return initAt(repoRoot)
+}
+
+func initAt(repoRoot string) error {
 	st, err := store.Open(repoRoot)
 	if err != nil {
 		return err

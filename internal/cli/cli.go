@@ -9,6 +9,7 @@ const usage = `litos-mcp — LLM context optimizer (MCP server)
 
 Usage:
   litos-mcp init [--root PATH]              Build or refresh the local symbol index
+  litos-mcp clean [--root PATH] [--reindex] Delete index cache (and optionally rebuild)
   litos-mcp serve                           Run MCP stdio server (blocks until disconnect)
   litos-mcp version                         Print build and runtime information
   litos-mcp search QUERY [--limit N] [--json]
@@ -33,6 +34,8 @@ func Run(args []string) error {
 	switch args[0] {
 	case "init":
 		return runInit(args[1:])
+	case "clean":
+		return runClean(args[1:])
 	case "serve":
 		return runServe(args[1:])
 	case "version":

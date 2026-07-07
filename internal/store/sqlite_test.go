@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1086,5 +1087,49 @@ func TestOpen_CreatesCallSitesTable(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("CallSiteCount = %d, want 0", n)
+	}
+}
+
+func TestRemoveCache_DeletesDBAndWAL(t *testing.T) {
+	dir := t.TempDir()
+
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	for _, path := range store.CachePaths(dir)[1:] {
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", path, err)
+		}
+	}
+
+	removed, err := store.RemoveCache(dir)
+	if err != nil {
+		t.Fatalf("RemoveCache: %v", err)
+	}
+	if len(removed) != 3 {
+		t.Fatalf("removed %d paths, want 3: %v", len(removed), removed)
+	}
+
+	for _, path := range store.CachePaths(dir) {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be gone, stat err = %v", path, err)
+		}
+	}
+}
+
+func TestRemoveCache_MissingCacheNoError(t *testing.T) {
+	dir := t.TempDir()
+
+	removed, err := store.RemoveCache(dir)
+	if err != nil {
+		t.Fatalf("RemoveCache: %v", err)
+	}
+	if len(removed) != 0 {
+		t.Fatalf("removed = %v, want empty", removed)
 	}
 }

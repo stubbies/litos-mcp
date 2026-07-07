@@ -44,7 +44,7 @@ Each hit includes a **`symbol_id`** (`file_path#kind#name#start_line`) that stay
 
 After large tree changes (`git pull`, branch switch), call **`reindex_index`** or run **`litos-mcp init`** again. Check sync state anytime via the **`litos://index/status`** MCP resource.
 
-**Call-site index:** Caller lookup adds a `call_sites` table indexed at sync time. If you upgrade from an older cache, **delete `.lcn_cache.db`** and run `litos-mcp init` — existing caches are not migrated automatically (same as byte-boundary columns).
+**Call-site index:** Caller lookup adds a `call_sites` table indexed at sync time. If you upgrade from an older cache, run **`litos-mcp clean --reindex`** — existing caches are not migrated automatically (same as byte-boundary columns).
 
 ## What it is not
 
@@ -76,7 +76,7 @@ By default, `read_symbol` returns a **line-range slice** derived from the primar
 CGO_ENABLED=1 go build -tags treesitter -o bin/litos-mcp ./cmd/litos-mcp
 ```
 
-Tree-sitter refines symbol `start_byte` / `end_byte` at index time; `read_symbol` prefers those bytes when present. This requires CGO and a C toolchain. After upgrading to a build with byte columns, **delete `.lcn_cache.db`** and run `litos-mcp init` — existing caches are not migrated automatically.
+Tree-sitter refines symbol `start_byte` / `end_byte` at index time; `read_symbol` prefers those bytes when present. This requires CGO and a C toolchain. After upgrading to a build with byte columns, run **`litos-mcp clean --reindex`** — existing caches are not migrated automatically.
 
 ### Language support
 
@@ -169,6 +169,7 @@ Crawl discovers many file types, but the regex indexer only extracts symbols fro
 | Command | Description |
 |---------|-------------|
 | `litos-mcp init [--root PATH]` | Build or refresh `.lcn_cache.db` |
+| `litos-mcp clean [--root PATH] [--reindex]` | Delete index cache (and optionally rebuild) |
 | `litos-mcp serve` | MCP stdio server + boot hydration + fsnotify sync |
 | `litos-mcp version` | Print binary, Go, indexer, boundary mode, callers mode, FTS5 status, and CLI subcommands |
 | `litos-mcp search QUERY [--limit N] [--json]` | Keyword or name search (same engine as `search_code_skeleton`) |
@@ -179,6 +180,12 @@ Crawl discovers many file types, but the regex indexer only extracts symbols fro
 | `litos-mcp check FILE [--json]` | Syntax check (tree-sitter build only) |
 
 Query subcommands accept `[--root PATH]` to override repo discovery. Use `--json` for machine-readable stdout; status messages go to stderr.
+
+| Situation | Command |
+|-----------|---------|
+| Normal edits | automatic fsnotify sync |
+| After `git pull` | `reindex_index` or `init` |
+| Schema upgrade / corrupt cache / fresh start | `clean --reindex` |
 
 ## Agent workflow
 
@@ -256,7 +263,7 @@ Refine search queries using symbol names, kinds, scopes, matched_in, and symbol_
 
 ## Cache and privacy
 
-- **`.lcn_cache.db`** lives at the repository root, is gitignored, and can be deleted anytime; `init` or `serve` rebuilds it.
+- **`.lcn_cache.db`** lives at the repository root, is gitignored, and can be deleted anytime; `init`, `clean --reindex`, or `serve` rebuilds it. Use **`litos-mcp clean`** to remove the cache and WAL sidecars without manual `rm`.
 - Indexing skips paths covered by `.gitignore`, `.git/info/exclude`, and built-in skip rules (e.g. `node_modules`, `.git`, common build dirs).
 - No source code is sent to external services—only your local agent reads files through MCP after you connect the server.
 

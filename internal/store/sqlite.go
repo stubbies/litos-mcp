@@ -123,6 +123,31 @@ func Exists(repoRoot string) bool {
 	return err == nil
 }
 
+// CachePaths returns the cache database path and SQLite WAL sidecar paths at repoRoot.
+func CachePaths(repoRoot string) []string {
+	dbPath := filepath.Join(repoRoot, CacheDBName)
+	return []string{
+		dbPath,
+		dbPath + "-wal",
+		dbPath + "-shm",
+	}
+}
+
+// RemoveCache deletes .lcn_cache.db and SQLite WAL sidecars at repoRoot.
+// Missing files are ignored. Returns paths removed (for logging).
+func RemoveCache(repoRoot string) (removed []string, err error) {
+	for _, path := range CachePaths(repoRoot) {
+		if err := os.Remove(path); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return removed, fmt.Errorf("remove %s: %w", path, err)
+		}
+		removed = append(removed, path)
+	}
+	return removed, nil
+}
+
 // UpsertFile atomically replaces symbols and call sites for a file and updates file metadata.
 // One transaction per file: DELETE existing rows → INSERT symbols → INSERT call sites → upsert files row.
 func (s *Store) UpsertFile(meta FileMeta, symbols []SymbolRecord, callSites []CallSiteRecord) error {
