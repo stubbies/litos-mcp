@@ -73,6 +73,53 @@ func TestSearch_ExactHit(t *testing.T) {
 	if hits[0].StartLine != want.StartLine {
 		t.Fatalf("start_line = %d, want %d", hits[0].StartLine, want.StartLine)
 	}
+	wantID := store.FormatSymbolID(store.SymbolRecord{
+		FilePath:  want.FilePath,
+		Kind:      "function",
+		Name:      want.Symbol,
+		StartLine: want.StartLine,
+	})
+	if hits[0].SymbolID != wantID {
+		t.Fatalf("symbol_id = %q, want %q", hits[0].SymbolID, wantID)
+	}
+}
+
+func TestSearch_NameMatchExactHit(t *testing.T) {
+	_, st, m := freshFixture(t)
+	hits, err := st.SearchWithOptions("ProcessPayment", 10, store.SearchOptions{NameMatch: "exact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("ProcessPayment exact hits = %d, want 1", len(hits))
+	}
+	want := m.Search.ProcessPayment
+	if hits[0].FilePath != want.FilePath {
+		t.Fatalf("file_path = %q, want %q", hits[0].FilePath, want.FilePath)
+	}
+	if hits[0].Symbol != want.Symbol {
+		t.Fatalf("symbol = %q, want %q", hits[0].Symbol, want.Symbol)
+	}
+	if hits[0].StartLine != want.StartLine {
+		t.Fatalf("start_line = %d, want %d", hits[0].StartLine, want.StartLine)
+	}
+	wantID := store.FormatSymbolID(store.SymbolRecord{
+		FilePath:  want.FilePath,
+		Kind:      "function",
+		Name:      want.Symbol,
+		StartLine: want.StartLine,
+	})
+	if hits[0].SymbolID != wantID {
+		t.Fatalf("symbol_id = %q, want %q", hits[0].SymbolID, wantID)
+	}
+
+	rec, err := st.GetSymbolByID(hits[0].SymbolID)
+	if err != nil {
+		t.Fatalf("GetSymbolByID round-trip: %v", err)
+	}
+	if rec.Name != want.Symbol {
+		t.Fatalf("GetSymbolByID name = %q, want %q", rec.Name, want.Symbol)
+	}
 }
 
 func TestSearch_MultiToken(t *testing.T) {
@@ -395,11 +442,64 @@ func TestMCP_FixtureSearchSchema(t *testing.T) {
 	if err := json.Unmarshal([]byte(text), &hits); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	required := []string{"file_path", "symbol", "kind", "start_line", "end_line", "scope", "matched_in"}
+	required := []string{"file_path", "symbol", "kind", "start_line", "end_line", "scope", "matched_in", "symbol_id"}
 	for _, key := range required {
 		if _, ok := hits[0][key]; !ok {
 			t.Fatalf("missing key %q", key)
 		}
+	}
+	wantID := store.FormatSymbolID(store.SymbolRecord{
+		FilePath:  "src/billing/billing.go",
+		Kind:      hits[0]["kind"].(string),
+		Name:      "ProcessPayment",
+		StartLine: int(hits[0]["start_line"].(float64)),
+	})
+	if hits[0]["symbol_id"] != wantID {
+		t.Fatalf("symbol_id = %v, want %q", hits[0]["symbol_id"], wantID)
+	}
+}
+
+func TestMCP_FixtureNameMatchRoundTrip(t *testing.T) {
+	root, st, m := freshFixture(t)
+	reader := testutil.NewReader(t, root)
+	_, session, cleanup := connectMCPSession(t, root, st, reader)
+	defer cleanup()
+
+	searchText := callToolText(t, session, "search_code_skeleton", map[string]any{
+		"query":      "ProcessPayment",
+		"name_match": "exact",
+	})
+	var hits []map[string]any
+	if err := json.Unmarshal([]byte(searchText), &hits); err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 hit, got %d", len(hits))
+	}
+	want := m.Search.ProcessPayment
+	if hits[0]["symbol"] != want.Symbol {
+		t.Fatalf("symbol = %v, want %q", hits[0]["symbol"], want.Symbol)
+	}
+
+	symbolID, ok := hits[0]["symbol_id"].(string)
+	if !ok || symbolID == "" {
+		t.Fatalf("missing symbol_id: %#v", hits[0])
+	}
+
+	readText := callToolText(t, session, "read_symbol", map[string]any{
+		"symbol_id": symbolID,
+	})
+	if !strings.Contains(readText, "func ProcessPayment(") {
+		t.Fatalf("read_symbol body = %q, want ProcessPayment definition", readText)
+	}
+
+	lineText := callToolText(t, session, "read_file_lines", map[string]any{
+		"file_path":  hits[0]["file_path"],
+		"start_line": int(hits[0]["start_line"].(float64)),
+		"end_line":   int(hits[0]["end_line"].(float64)),
+	})
+	if readText != lineText {
+		t.Fatalf("read_symbol and read_file_lines differ:\nread_symbol:\n%s\nread_file_lines:\n%s", readText, lineText)
 	}
 }
 

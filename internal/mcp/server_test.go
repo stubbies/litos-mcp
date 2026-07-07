@@ -117,7 +117,7 @@ func TestMCP_SearchSchema(t *testing.T) {
 		t.Fatalf("expected 1 hit, got %d", len(hits))
 	}
 
-	required := []string{"file_path", "symbol", "kind", "start_line", "end_line", "scope", "matched_in"}
+	required := []string{"file_path", "symbol", "kind", "start_line", "end_line", "scope", "matched_in", "symbol_id"}
 	for _, key := range required {
 		if _, ok := hits[0][key]; !ok {
 			t.Fatalf("hit missing key %q: %#v", key, hits[0])
@@ -125,6 +125,9 @@ func TestMCP_SearchSchema(t *testing.T) {
 	}
 	if hits[0]["symbol"] != "ProcessPayment" {
 		t.Fatalf("symbol = %v, want ProcessPayment", hits[0]["symbol"])
+	}
+	if hits[0]["symbol_id"] != "main.go#function#ProcessPayment#3" {
+		t.Fatalf("symbol_id = %v, want main.go#function#ProcessPayment#3", hits[0]["symbol_id"])
 	}
 }
 
@@ -143,6 +146,220 @@ func TestMCP_SearchLimit(t *testing.T) {
 	}
 	if len(hits) > 1 {
 		t.Fatalf("len(hits) = %d, want <= 1", len(hits))
+	}
+}
+
+func TestMCP_OutlineFile(t *testing.T) {
+	_, session, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	text := callToolText(t, session, "outline_file", map[string]any{
+		"file_path": "main.go",
+	})
+
+	var entries []map[string]any
+	if err := json.Unmarshal([]byte(text), &entries); err != nil {
+		t.Fatalf("outline response is not JSON array: %v\nbody: %s", err, text)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 symbols, got %d", len(entries))
+	}
+
+	required := []string{"symbol_id", "file_path", "symbol", "kind", "start_line", "end_line", "scope"}
+	for i, entry := range entries {
+		for _, key := range required {
+			if _, ok := entry[key]; !ok {
+				t.Fatalf("entry[%d] missing key %q: %#v", i, key, entry)
+			}
+		}
+		if _, ok := entry["matched_in"]; ok {
+			t.Fatalf("entry[%d] should not include matched_in: %#v", i, entry)
+		}
+	}
+
+	if entries[0]["symbol"] != "ProcessPayment" {
+		t.Fatalf("first symbol = %v, want ProcessPayment", entries[0]["symbol"])
+	}
+	if entries[1]["symbol"] != "helper" {
+		t.Fatalf("second symbol = %v, want helper", entries[1]["symbol"])
+	}
+	if entries[0]["symbol_id"] != "main.go#function#ProcessPayment#3" {
+		t.Fatalf("symbol_id = %v, want main.go#function#ProcessPayment#3", entries[0]["symbol_id"])
+	}
+}
+
+func TestMCP_OutlineFileUnindexed(t *testing.T) {
+	_, session, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	text := callToolText(t, session, "outline_file", map[string]any{
+		"file_path": "missing.go",
+	})
+
+	var entries []map[string]any
+	if err := json.Unmarshal([]byte(text), &entries); err != nil {
+		t.Fatalf("outline response is not JSON array: %v\nbody: %s", err, text)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("unindexed file should return empty array, got %d entries", len(entries))
+	}
+}
+
+func TestMCP_OutlineFileRoundTrip(t *testing.T) {
+	_, session, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	outlineText := callToolText(t, session, "outline_file", map[string]any{
+		"file_path": "main.go",
+	})
+	var entries []map[string]any
+	if err := json.Unmarshal([]byte(outlineText), &entries); err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) < 1 {
+		t.Fatal("expected at least one outline entry")
+	}
+	symbolID, ok := entries[0]["symbol_id"].(string)
+	if !ok || symbolID == "" {
+		t.Fatalf("missing symbol_id in outline entry: %#v", entries[0])
+	}
+
+	readText := callToolText(t, session, "read_symbol", map[string]any{
+		"symbol_id": symbolID,
+	})
+	if !strings.Contains(readText, "func ProcessPayment()") {
+		t.Fatalf("read_symbol body = %q, want ProcessPayment definition", readText)
+	}
+}
+
+func TestMCP_ReadSymbolRoundTrip(t *testing.T) {
+	_, session, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	searchText := callToolText(t, session, "search_code_skeleton", map[string]any{
+		"query": "ProcessPayment",
+	})
+	var hits []map[string]any
+	if err := json.Unmarshal([]byte(searchText), &hits); err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 hit, got %d", len(hits))
+	}
+	symbolID, ok := hits[0]["symbol_id"].(string)
+	if !ok || symbolID == "" {
+		t.Fatalf("missing symbol_id in search hit: %#v", hits[0])
+	}
+
+	readText := callToolText(t, session, "read_symbol", map[string]any{
+		"symbol_id": symbolID,
+	})
+	if !strings.Contains(readText, "func ProcessPayment()") {
+		t.Fatalf("read_symbol body = %q, want ProcessPayment definition", readText)
+	}
+
+	lineText := callToolText(t, session, "read_file_lines", map[string]any{
+		"file_path":  "main.go",
+		"start_line": int(hits[0]["start_line"].(float64)),
+		"end_line":   int(hits[0]["end_line"].(float64)),
+	})
+	if readText != lineText {
+		t.Fatalf("read_symbol and read_file_lines differ:\nread_symbol:\n%s\nread_file_lines:\n%s", readText, lineText)
+	}
+}
+
+func TestMCP_SearchNameMatchExact(t *testing.T) {
+	_, session, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	text := callToolText(t, session, "search_code_skeleton", map[string]any{
+		"query":       "ProcessPayment",
+		"name_match":  "exact",
+	})
+	var hits []map[string]any
+	if err := json.Unmarshal([]byte(text), &hits); err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 hit, got %d", len(hits))
+	}
+	if hits[0]["symbol"] != "ProcessPayment" {
+		t.Fatalf("symbol = %v, want ProcessPayment", hits[0]["symbol"])
+	}
+	if hits[0]["symbol_id"] != "main.go#function#ProcessPayment#3" {
+		t.Fatalf("symbol_id = %v, want main.go#function#ProcessPayment#3", hits[0]["symbol_id"])
+	}
+
+	symbolID := hits[0]["symbol_id"].(string)
+	readText := callToolText(t, session, "read_symbol", map[string]any{
+		"symbol_id": symbolID,
+	})
+	if !strings.Contains(readText, "func ProcessPayment()") {
+		t.Fatalf("read_symbol body = %q, want ProcessPayment definition", readText)
+	}
+}
+
+func TestMCP_SearchNameMatchContains(t *testing.T) {
+	_, session, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	text := callToolText(t, session, "search_code_skeleton", map[string]any{
+		"query":      "Process",
+		"name_match": "contains",
+	})
+	var hits []map[string]any
+	if err := json.Unmarshal([]byte(text), &hits); err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 hit, got %d", len(hits))
+	}
+	if hits[0]["symbol"] != "ProcessPayment" {
+		t.Fatalf("symbol = %v, want ProcessPayment", hits[0]["symbol"])
+	}
+}
+
+func TestMCP_ReadSymbolInvalidID(t *testing.T) {
+	_, session, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	res, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name: "read_symbol",
+		Arguments: map[string]any{
+			"symbol_id": "bad-id",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatal("expected tool error for invalid symbol_id")
+	}
+	text := res.Content[0].(*mcpsdk.TextContent).Text
+	if !strings.Contains(text, "invalid symbol id") {
+		t.Fatalf("error text = %q, want invalid symbol id", text)
+	}
+}
+
+func TestMCP_ReadSymbolStaleID(t *testing.T) {
+	_, session, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	res, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name: "read_symbol",
+		Arguments: map[string]any{
+			"symbol_id": "main.go#function#Gone#99",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatal("expected tool error for stale symbol_id")
+	}
+	text := res.Content[0].(*mcpsdk.TextContent).Text
+	if !strings.Contains(text, "symbol not found") || !strings.Contains(text, "re-search") {
+		t.Fatalf("error text = %q, want symbol not found with re-search hint", text)
 	}
 }
 

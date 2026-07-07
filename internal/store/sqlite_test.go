@@ -3,6 +3,7 @@ package store_test
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -70,6 +71,10 @@ func TestFTS5_InsertAndSearch(t *testing.T) {
 	if h.FilePath != "src/billing.go" || h.Symbol != "ProcessPayment" || h.Kind != "function" ||
 		h.StartLine != 45 || h.EndLine != 75 || h.Scope != "BillingService" {
 		t.Fatalf("unexpected hit: %+v", h)
+	}
+	wantID := "src/billing.go#function#ProcessPayment#45"
+	if h.SymbolID != wantID {
+		t.Fatalf("symbol_id = %q, want %q", h.SymbolID, wantID)
 	}
 }
 
@@ -503,5 +508,258 @@ func TestSearch_MatchedInKind(t *testing.T) {
 	}
 	if hits[0].MatchedIn != "kind" {
 		t.Fatalf("matched_in = %q, want kind", hits[0].MatchedIn)
+	}
+}
+
+func TestFormatAndParseSymbolID(t *testing.T) {
+	rec := store.SymbolRecord{
+		FilePath:  "src/billing/billing.go",
+		Kind:      "function",
+		Name:      "ProcessPayment",
+		StartLine: 56,
+	}
+	id := store.FormatSymbolID(rec)
+	want := "src/billing/billing.go#function#ProcessPayment#56"
+	if id != want {
+		t.Fatalf("FormatSymbolID = %q, want %q", id, want)
+	}
+
+	parsed, err := store.ParseSymbolID(id)
+	if err != nil {
+		t.Fatalf("ParseSymbolID: %v", err)
+	}
+	if parsed.FilePath != rec.FilePath || parsed.Kind != rec.Kind ||
+		parsed.Name != rec.Name || parsed.StartLine != rec.StartLine {
+		t.Fatalf("parsed = %+v, want %+v", parsed, rec)
+	}
+}
+
+func TestParseSymbolID_HashInPath(t *testing.T) {
+	id := "src/foo#bar/baz.go#function#Fn#10"
+	parsed, err := store.ParseSymbolID(id)
+	if err != nil {
+		t.Fatalf("ParseSymbolID: %v", err)
+	}
+	if parsed.FilePath != "src/foo#bar/baz.go" || parsed.Name != "Fn" || parsed.StartLine != 10 {
+		t.Fatalf("parsed = %+v", parsed)
+	}
+}
+
+func TestParseSymbolID_Invalid(t *testing.T) {
+	cases := []string{"", "no-separators", "a#b#c", "a#b#c#notint"}
+	for _, id := range cases {
+		if _, err := store.ParseSymbolID(id); err == nil {
+			t.Errorf("ParseSymbolID(%q) expected error", id)
+		}
+	}
+}
+
+func TestGetSymbolByID(t *testing.T) {
+	st, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	meta := store.FileMeta{Path: "src/billing.go", MtimeNs: 1, Size: 100}
+	symbols := []store.SymbolRecord{
+		{Name: "ProcessPayment", Kind: "function", Scope: "BillingService", StartLine: 45, EndLine: 75},
+	}
+	if err := st.UpsertFile(meta, symbols); err != nil {
+		t.Fatal(err)
+	}
+
+	id := "src/billing.go#function#ProcessPayment#45"
+	rec, err := st.GetSymbolByID(id)
+	if err != nil {
+		t.Fatalf("GetSymbolByID: %v", err)
+	}
+	if rec.Name != "ProcessPayment" || rec.EndLine != 75 || rec.Scope != "BillingService" {
+		t.Fatalf("unexpected record: %+v", rec)
+	}
+
+	if _, err := st.GetSymbolByID("bad-id"); err == nil {
+		t.Fatal("expected error for invalid id")
+	}
+	if _, err := st.GetSymbolByID("src/billing.go#function#Gone#99"); err == nil {
+		t.Fatal("expected error for stale id")
+	}
+}
+
+func TestListSymbolsByFile(t *testing.T) {
+	st, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if err := st.UpsertFile(store.FileMeta{Path: "x.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
+		{Name: "Beta", Kind: "function", StartLine: 20, EndLine: 25},
+		{Name: "Alpha", Kind: "type", StartLine: 5, EndLine: 10},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	symbols, err := st.ListSymbolsByFile("x.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(symbols) != 2 {
+		t.Fatalf("got %d symbols, want 2", len(symbols))
+	}
+	if symbols[0].Name != "Alpha" || symbols[1].Name != "Beta" {
+		t.Fatalf("order by start_line failed: %+v", symbols)
+	}
+
+	empty, err := st.ListSymbolsByFile("missing.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("unindexed file should return empty slice, got %d", len(empty))
+	}
+}
+
+func TestSearch_NameMatchExact(t *testing.T) {
+	st, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if err := st.UpsertFile(store.FileMeta{Path: "a.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
+		{Name: "ProcessPayment", Kind: "function", StartLine: 10, EndLine: 20},
+		{Name: "ProcessPaymentHelper", Kind: "function", StartLine: 25, EndLine: 30},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertFile(store.FileMeta{Path: "b.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
+		{Name: "processpayment", Kind: "function", StartLine: 5, EndLine: 8},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, err := st.SearchWithOptions("ProcessPayment", 10, store.SearchOptions{NameMatch: "exact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("exact match: got %d hits, want 1", len(hits))
+	}
+	if hits[0].Symbol != "ProcessPayment" || hits[0].FilePath != "a.go" {
+		t.Fatalf("unexpected hit: %+v", hits[0])
+	}
+	if hits[0].MatchedIn != "symbol" {
+		t.Fatalf("matched_in = %q, want symbol", hits[0].MatchedIn)
+	}
+	wantID := "a.go#function#ProcessPayment#10"
+	if hits[0].SymbolID != wantID {
+		t.Fatalf("symbol_id = %q, want %q", hits[0].SymbolID, wantID)
+	}
+}
+
+func TestSearch_NameMatchExactCaseSensitive(t *testing.T) {
+	st, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if err := st.UpsertFile(store.FileMeta{Path: "a.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
+		{Name: "processpayment", Kind: "function", StartLine: 1, EndLine: 2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, err := st.SearchWithOptions("ProcessPayment", 10, store.SearchOptions{NameMatch: "exact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("case-sensitive exact: got %d hits, want 0", len(hits))
+	}
+}
+
+func TestSearch_NameMatchContains(t *testing.T) {
+	st, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if err := st.UpsertFile(store.FileMeta{Path: "a.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
+		{Name: "ProcessPayment", Kind: "function", StartLine: 10, EndLine: 20},
+		{Name: "ProcessPaymentHelper", Kind: "function", StartLine: 25, EndLine: 30},
+		{Name: "Refund", Kind: "function", StartLine: 40, EndLine: 45},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, err := st.SearchWithOptions("Process", 10, store.SearchOptions{NameMatch: "contains"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("contains match: got %d hits, want 2", len(hits))
+	}
+	for _, h := range hits {
+		if !strings.Contains(h.Symbol, "Process") {
+			t.Fatalf("unexpected symbol %q", h.Symbol)
+		}
+		if h.SymbolID == "" {
+			t.Fatalf("missing symbol_id on hit %+v", h)
+		}
+	}
+}
+
+func TestSearch_NameMatchContainsSpecialChars(t *testing.T) {
+	st, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if err := st.UpsertFile(store.FileMeta{Path: "weird.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
+		{Name: "FuncWith*Star", Kind: "function", StartLine: 1, EndLine: 2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, err := st.SearchWithOptions("*Star", 10, store.SearchOptions{NameMatch: "contains"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].Symbol != "FuncWith*Star" {
+		t.Fatalf("contains with special chars failed: %+v", hits)
+	}
+}
+
+func TestSearch_NameMatchRoundTrip(t *testing.T) {
+	st, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if err := st.UpsertFile(store.FileMeta{Path: "src/billing.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
+		{Name: "ProcessPayment", Kind: "function", Scope: "BillingService", StartLine: 45, EndLine: 75},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, err := st.SearchWithOptions("ProcessPayment", 10, store.SearchOptions{NameMatch: "exact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("got %d hits, want 1", len(hits))
+	}
+
+	rec, err := st.GetSymbolByID(hits[0].SymbolID)
+	if err != nil {
+		t.Fatalf("GetSymbolByID: %v", err)
+	}
+	if rec.Name != "ProcessPayment" || rec.EndLine != 75 {
+		t.Fatalf("unexpected record: %+v", rec)
 	}
 }

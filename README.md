@@ -20,13 +20,14 @@ It runs as a **single Go binary** over stdio inside Cursor, Claude Code, and oth
 
 1. **`litos-mcp init`** (or auto-init on first `serve`) crawls indexable source files, extracts symbols, and writes `.lcn_cache.db` with an FTS5 search index.
 2. **`litos-mcp serve`** starts the MCP server, hydrates any drift since last run, and watches the filesystem for changes while you work.
-3. The agent calls **`search_code_skeleton`** with keywords (e.g. `"jwt verification"`, `"payment handler"`).
-4. For promising hits, the agent calls **`read_file_lines`** with the returned `file_path`, `start_line`, and `end_line`.
+3. The agent **discovers** symbols via keyword search, exact name lookup, or a single-file outline.
+4. The agent **fetches** source with **`read_symbol`** using the stable `symbol_id` from search or outline hits (`read_file_lines` remains a fallback).
 
 Example search hit (no source body—just structure):
 
 ```json
 [{
+  "symbol_id": "src/billing/billing.go#function#ProcessPayment#56",
   "file_path": "src/billing/billing.go",
   "symbol": "ProcessPayment",
   "kind": "function",
@@ -36,6 +37,8 @@ Example search hit (no source body—just structure):
   "matched_in": "symbol"
 }]
 ```
+
+Each hit includes a **`symbol_id`** (`file_path#kind#name#start_line`) that stays stable until the definition moves (line, kind, or name change). After edits that shift definitions, re-search to refresh IDs.
 
 After large tree changes (`git pull`, branch switch), call **`reindex_index`** or run **`litos-mcp init`** again. Check sync state anytime via the **`litos://index/status`** MCP resource.
 
@@ -132,11 +135,13 @@ Crawl discovers many file types, but the regex indexer only extracts symbols fro
    Restart Claude Code after config changes. Verify with **`/mcp`** or `claude mcp list`. First-time project-scoped servers may require approval in the UI.
 
 3. **Use the MCP tools** in agent sessions:
-   - `search_code_skeleton` — find symbols by keyword (returns JSON hits with file path, line ranges, and `matched_in`; optional `match_mode`: `and` or `or`)
-   - `read_file_lines` — read a bounded, line-numbered slice after search confirms the target
+   - `search_code_skeleton` — find symbols by keyword (default FTS) or by name (`name_match`: `exact` or `contains`); returns JSON hits with `symbol_id`, line ranges, and `matched_in`; optional `match_mode`: `and` or `or` (FTS only)
+   - `outline_file` — list all indexed symbols in one file with `symbol_id`, kind, scope, and line ranges
+   - `read_symbol` — read a bounded, line-numbered slice by `symbol_id` (preferred fetch path)
+   - `read_file_lines` — read a bounded slice by file path and line range (fallback when you lack a `symbol_id`)
    - `reindex_index` — full index rebuild after large changes (e.g. `git pull`); normal saves sync automatically
    - **`litos://index/status`** (MCP resource) — JSON sync status: file/symbol counts, indexer, `reconcile_needed`
-   - **`code_discovery_workflow`** (MCP prompt) — onboarding text for agents: search first, read narrowly
+   - **`code_discovery_workflow`** (MCP prompt) — onboarding text for agents: discover → fetch by `symbol_id`
 
 `litos-mcp serve` auto-runs `init` when the cache is missing, then **hydrates** the index on startup (stat pass + boot crawl) and keeps it fresh with a **filesystem watcher** for debounced per-file updates. Search calls run a lightweight staleness check before FTS.
 
@@ -150,21 +155,23 @@ Crawl discovers many file types, but the regex indexer only extracts symbols fro
 
 ## Agent workflow
 
-1. Call `search_code_skeleton(query="payment middleware")` for structural hits (~10 results by default).
-2. Call `read_file_lines(file_path, start_line, end_line)` only for confirmed ranges from search results.
-3. Prefer these tools over grep or reading entire files when litos-mcp is available.
+1. **Keyword discovery** — `search_code_skeleton(query="payment middleware")` for structural FTS hits (~10 results by default).
+2. **Known symbol name** — `search_code_skeleton(query="ProcessPayment", name_match="exact")` for a case-sensitive name match (use `name_match="contains"` for substring).
+3. **Known file** — `outline_file(file_path="src/billing/billing.go")` to list symbols and pick a `symbol_id`.
+4. **Fetch** — `read_symbol(symbol_id=...)` using the ID from search or outline (preferred). Use `read_file_lines` only when you lack a `symbol_id`.
+5. Prefer litos tools over grep or reading entire files when litos-mcp is available.
 
 The MCP server exposes a **`code_discovery_workflow`** prompt with the same guidance. In Cursor, invoke it from the MCP prompts picker or reference it when onboarding agents to the repo.
 
 ### Claude Code (recommended)
 
-Add **`CLAUDE.md`** at the project root with the same discovery workflow (search → read slices → grep fallback). The MCP prompt **`code_discovery_workflow`** is available in Claude Code when the server is connected.
+Add **`CLAUDE.md`** at the project root with the same discovery workflow (discover → `read_symbol` → grep fallback). The MCP prompt **`code_discovery_workflow`** is available in Claude Code when the server is connected.
 
-After edits, wait for fsnotify debounce (~300ms) or run a second search; use **`reindex_index`** after `git pull`.
+After edits, wait for fsnotify debounce (~300ms) or run a second search; use **`reindex_index`** after `git pull`. If `read_symbol` reports a stale ID, re-search or re-outline to get a fresh `symbol_id`.
 
 ### Cursor rule (recommended)
 
-Add `.cursor/rules/litos-code-discovery.mdc` so agents default to litos tools in this workspace:
+This repo includes `.cursor/rules/litos-code-discovery.mdc` as a template. Copy or adapt it in projects where litos-mcp is wired in:
 
 ```markdown
 ---
@@ -174,14 +181,16 @@ alwaysApply: true
 
 # Code discovery with litos-mcp
 
-When litos-mcp is connected (search_code_skeleton, read_file_lines):
+When litos-mcp is connected (search_code_skeleton, outline_file, read_symbol, read_file_lines):
 
-1. Start with search_code_skeleton using functional keywords from the task.
-2. Read only the line ranges returned by search via read_file_lines.
-3. Do not use grep, ripgrep, or Read on entire source files for discovery when litos tools are available.
-4. Use grep or full-file reads only as a fallback when litos returns no hits or you need exact regex matches.
+1. Keyword discovery — search_code_skeleton with functional keywords from the task.
+2. Known symbol name — search_code_skeleton with name_match "exact" (case-sensitive) or "contains".
+3. Known file — outline_file to list symbols and symbol_ids in that file.
+4. Fetch — read_symbol(symbol_id) from search or outline hits; read_file_lines only as fallback.
+5. Do not use grep, ripgrep, or Read on entire source files for discovery when litos tools are available.
+6. Use grep or full-file reads only when litos returns no hits or you need exact regex/string matches.
 
-Refine search queries using symbol names, kinds, scopes, and matched_in from prior hits.
+Refine search queries using symbol names, kinds, scopes, matched_in, and symbol_id from prior hits. Re-search after edits if read_symbol reports a stale symbol_id.
 ```
 
 ## Cache and privacy

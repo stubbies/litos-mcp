@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/stubbies/litos-mcp/internal/store"
 )
 
 const (
@@ -77,6 +79,20 @@ func (r *Reader) ReadLines(filePath string, startLine, endLine int) (string, err
 	defer f.Close()
 
 	return readLineRange(f, startLine, endLine)
+}
+
+// ReadSymbol returns the source slice for sym using its indexed line range.
+func (r *Reader) ReadSymbol(sym store.SymbolRecord) (string, error) {
+	return r.ReadLines(sym.FilePath, sym.StartLine, sym.EndLine)
+}
+
+// ReadSymbol is a convenience wrapper around New and Reader.ReadSymbol.
+func ReadSymbol(repoRoot string, sym store.SymbolRecord) (string, error) {
+	r, err := New(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	return r.ReadSymbol(sym)
 }
 
 // ReadLines is a convenience wrapper around New and Reader.ReadLines.

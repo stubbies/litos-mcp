@@ -293,10 +293,20 @@ func (s *Store) Search(query string, limit int) ([]SearchHit, error) {
 	return s.SearchWithOptions(query, limit, SearchOptions{})
 }
 
-// SearchWithOptions queries FTS5 with optional match mode and LIKE fallback.
+// SearchWithOptions queries FTS5 with optional match mode and LIKE fallback,
+// or performs exact/contains symbol name lookup when NameMatch is set.
 func (s *Store) SearchWithOptions(query string, limit int, opts SearchOptions) ([]SearchHit, error) {
 	if limit <= 0 {
 		limit = 10
+	}
+
+	if nameMatch := normalizeNameMatch(opts.NameMatch); nameMatch != "" {
+		hits, err := s.searchByName(query, limit, nameMatch)
+		if err != nil {
+			return nil, err
+		}
+		annotateMatchedIn(query, hits)
+		return hits, nil
 	}
 
 	matchMode := normalizeMatchMode(opts.MatchMode)
@@ -321,6 +331,52 @@ func normalizeMatchMode(mode string) string {
 		return "or"
 	}
 	return "and"
+}
+
+func normalizeNameMatch(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "exact", "contains":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return ""
+	}
+}
+
+func (s *Store) searchByName(query string, limit int, mode string) ([]SearchHit, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+
+	var sql string
+	var args []any
+	if mode == "exact" {
+		sql = `
+			SELECT file_path, name, kind, start_line, end_line, scope
+			FROM symbols
+			WHERE name = ?
+			ORDER BY file_path, start_line
+			LIMIT ?
+		`
+		args = []any{query, limit}
+	} else {
+		pattern := "%" + escapeLike(query) + "%"
+		sql = `
+			SELECT file_path, name, kind, start_line, end_line, scope
+			FROM symbols
+			WHERE name LIKE ? ESCAPE '\'
+			ORDER BY file_path, start_line
+			LIMIT ?
+		`
+		args = []any{pattern, limit}
+	}
+
+	rows, err := s.db.Query(sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("name search: %w", err)
+	}
+	defer rows.Close()
+	return scanSearchHits(rows)
 }
 
 func (s *Store) searchFTS(ftsQuery string, limit int) ([]SearchHit, error) {
@@ -382,12 +438,69 @@ func scanSearchHits(rows *sql.Rows) ([]SearchHit, error) {
 		if err := rows.Scan(&h.FilePath, &h.Symbol, &h.Kind, &h.StartLine, &h.EndLine, &h.Scope); err != nil {
 			return nil, fmt.Errorf("scan search hit: %w", err)
 		}
+		h.SymbolID = FormatSymbolID(SymbolRecord{
+			FilePath:  h.FilePath,
+			Kind:      h.Kind,
+			Name:      h.Symbol,
+			StartLine: h.StartLine,
+		})
 		hits = append(hits, h)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate search hits: %w", err)
 	}
 	return hits, nil
+}
+
+// GetSymbolByID looks up a symbol by its stable symbol_id string.
+func (s *Store) GetSymbolByID(id string) (SymbolRecord, error) {
+	key, err := ParseSymbolID(id)
+	if err != nil {
+		return SymbolRecord{}, err
+	}
+
+	var rec SymbolRecord
+	err = s.db.QueryRow(`
+		SELECT name, file_path, kind, scope, start_line, end_line
+		FROM symbols
+		WHERE file_path = ? AND kind = ? AND name = ? AND start_line = ?
+	`, key.FilePath, key.Kind, key.Name, key.StartLine).Scan(
+		&rec.Name, &rec.FilePath, &rec.Kind, &rec.Scope, &rec.StartLine, &rec.EndLine,
+	)
+	if err == sql.ErrNoRows {
+		return SymbolRecord{}, fmt.Errorf("symbol not found: %s", id)
+	}
+	if err != nil {
+		return SymbolRecord{}, fmt.Errorf("get symbol by id: %w", err)
+	}
+	return rec, nil
+}
+
+// ListSymbolsByFile returns all symbols in filePath ordered by start_line.
+func (s *Store) ListSymbolsByFile(filePath string) ([]SymbolRecord, error) {
+	rows, err := s.db.Query(`
+		SELECT name, file_path, kind, scope, start_line, end_line
+		FROM symbols
+		WHERE file_path = ?
+		ORDER BY start_line
+	`, filePath)
+	if err != nil {
+		return nil, fmt.Errorf("list symbols for %s: %w", filePath, err)
+	}
+	defer rows.Close()
+
+	var symbols []SymbolRecord
+	for rows.Next() {
+		var rec SymbolRecord
+		if err := rows.Scan(&rec.Name, &rec.FilePath, &rec.Kind, &rec.Scope, &rec.StartLine, &rec.EndLine); err != nil {
+			return nil, fmt.Errorf("scan symbol row: %w", err)
+		}
+		symbols = append(symbols, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate symbols for %s: %w", filePath, err)
+	}
+	return symbols, nil
 }
 
 // SanitizeFTSQuery wraps each whitespace-separated token in double quotes for FTS5 MATCH.

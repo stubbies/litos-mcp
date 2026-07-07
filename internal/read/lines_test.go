@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/stubbies/litos-mcp/internal/read"
+	"github.com/stubbies/litos-mcp/internal/store"
 )
 
 func writeFile(t *testing.T, path, content string) {
@@ -18,6 +19,40 @@ func writeFile(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReadSymbol_DelegatesToReadLines(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "src", "billing.go"), strings.Join([]string{
+		"package billing",
+		"",
+		"func ProcessPayment() {",
+		"	return nil",
+		"}",
+	}, "\n"))
+
+	r, err := read.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sym := store.SymbolRecord{
+		FilePath:  "src/billing.go",
+		Kind:      "function",
+		Name:      "ProcessPayment",
+		StartLine: 3,
+		EndLine:   5,
+	}
+
+	got, err := r.ReadSymbol(sym)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := "3\tfunc ProcessPayment() {\n4\t\treturn nil\n5\t}"
+	if got != want {
+		t.Fatalf("ReadSymbol() = %q, want %q", got, want)
 	}
 }
 

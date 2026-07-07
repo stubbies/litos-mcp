@@ -1,0 +1,17 @@
+---
+description: Prefer litos-mcp structural search over grep and whole-file reads
+alwaysApply: true
+---
+
+# Code discovery with litos-mcp
+
+When litos-mcp is connected (search_code_skeleton, outline_file, read_symbol, read_file_lines):
+
+1. Keyword discovery — search_code_skeleton with functional keywords from the task.
+2. Known symbol name — search_code_skeleton with name_match "exact" (case-sensitive) or "contains".
+3. Known file — outline_file to list symbols and symbol_ids in that file.
+4. Fetch — read_symbol(symbol_id) from search or outline hits; read_file_lines only as fallback.
+5. Do not use grep, ripgrep, or Read on entire source files for discovery when litos tools are available.
+6. Use grep or full-file reads only when litos returns no hits or you need exact regex/string matches.
+
+Refine search queries using symbol names, kinds, scopes, matched_in, and symbol_id from prior hits. Re-search after edits if read_symbol reports a stale symbol_id.
