@@ -123,9 +123,9 @@ func Exists(repoRoot string) bool {
 	return err == nil
 }
 
-// UpsertFile atomically replaces all symbols for a file and updates file metadata.
-// One transaction per file: DELETE existing symbols → INSERT new symbols → upsert files row.
-func (s *Store) UpsertFile(meta FileMeta, symbols []SymbolRecord) error {
+// UpsertFile atomically replaces symbols and call sites for a file and updates file metadata.
+// One transaction per file: DELETE existing rows → INSERT symbols → INSERT call sites → upsert files row.
+func (s *Store) UpsertFile(meta FileMeta, symbols []SymbolRecord, callSites []CallSiteRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -137,6 +137,9 @@ func (s *Store) UpsertFile(meta FileMeta, symbols []SymbolRecord) error {
 
 	if _, err := tx.Exec(`DELETE FROM symbols WHERE file_path = ?`, meta.Path); err != nil {
 		return fmt.Errorf("delete symbols for %s: %w", meta.Path, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM call_sites WHERE file_path = ?`, meta.Path); err != nil {
+		return fmt.Errorf("delete call sites for %s: %w", meta.Path, err)
 	}
 
 	stmt, err := tx.Prepare(`
@@ -156,6 +159,25 @@ func (s *Store) UpsertFile(meta FileMeta, symbols []SymbolRecord) error {
 		startByte, endByte := symbolByteColumns(sym)
 		if _, err := stmt.Exec(sym.Name, meta.Path, sym.Kind, scope, sym.StartLine, sym.EndLine, startByte, endByte); err != nil {
 			return fmt.Errorf("insert symbol %q in %s: %w", sym.Name, meta.Path, err)
+		}
+	}
+
+	callStmt, err := tx.Prepare(`
+		INSERT INTO call_sites (callee_name, file_path, line, col, enclosing_name, enclosing_kind, enclosing_scope)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return fmt.Errorf("prepare call site insert: %w", err)
+	}
+	defer callStmt.Close()
+
+	for _, call := range callSites {
+		enclosingName, enclosingKind, enclosingScope := ResolveEnclosingSymbol(symbols, call.Line)
+		if _, err := callStmt.Exec(
+			call.CalleeName, meta.Path, call.Line, call.Col,
+			enclosingName, enclosingKind, enclosingScope,
+		); err != nil {
+			return fmt.Errorf("insert call site %q in %s:%d: %w", call.CalleeName, meta.Path, call.Line, err)
 		}
 	}
 
@@ -185,6 +207,9 @@ func (s *Store) RemoveFile(path string) error {
 
 	if _, err := tx.Exec(`DELETE FROM symbols WHERE file_path = ?`, path); err != nil {
 		return fmt.Errorf("delete symbols for %s: %w", path, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM call_sites WHERE file_path = ?`, path); err != nil {
+		return fmt.Errorf("delete call sites for %s: %w", path, err)
 	}
 	if _, err := tx.Exec(`DELETE FROM files WHERE path = ?`, path); err != nil {
 		return fmt.Errorf("delete file row for %s: %w", path, err)
@@ -287,6 +312,129 @@ func (s *Store) SymbolCount() (int, error) {
 		return 0, fmt.Errorf("count symbols: %w", err)
 	}
 	return n, nil
+}
+
+// CallSiteCount returns the number of indexed call sites.
+func (s *Store) CallSiteCount() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM call_sites`).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count call sites: %w", err)
+	}
+	return n, nil
+}
+
+// FindCallers returns call sites that invoke the given callee name (exact, case-sensitive).
+// dir, when non-empty, limits results to file_path values with that repo-relative prefix.
+func (s *Store) FindCallers(name string, dir string, limit int) ([]CallerHit, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+
+	dir = strings.Trim(strings.TrimSpace(dir), "/")
+
+	var (
+		sql  string
+		args []any
+	)
+	if dir == "" {
+		sql = `
+			SELECT callee_name, file_path, line, col, enclosing_name, enclosing_kind, enclosing_scope
+			FROM call_sites
+			WHERE callee_name = ?
+			ORDER BY file_path, line, col
+			LIMIT ?
+		`
+		args = []any{name, limit}
+	} else {
+		prefix := dir + "/"
+		sql = `
+			SELECT callee_name, file_path, line, col, enclosing_name, enclosing_kind, enclosing_scope
+			FROM call_sites
+			WHERE callee_name = ? AND (file_path = ? OR file_path LIKE ? ESCAPE '\')
+			ORDER BY file_path, line, col
+			LIMIT ?
+		`
+		args = []any{name, dir, escapeLike(prefix) + "%", limit}
+	}
+
+	rows, err := s.db.Query(sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("find callers for %q: %w", name, err)
+	}
+	defer rows.Close()
+
+	var hits []CallerHit
+	for rows.Next() {
+		var hit CallerHit
+		if err := rows.Scan(
+			&hit.CalleeName, &hit.FilePath, &hit.Line, &hit.Col,
+			&hit.EnclosingSymbol, &hit.EnclosingKind, &hit.EnclosingScope,
+		); err != nil {
+			return nil, fmt.Errorf("scan caller hit: %w", err)
+		}
+		hits = append(hits, hit)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate caller hits: %w", err)
+	}
+
+	for i := range hits {
+		if hits[i].EnclosingSymbol == "" {
+			continue
+		}
+		id, err := s.resolveEnclosingSymbolID(
+			hits[i].FilePath, hits[i].EnclosingSymbol, hits[i].EnclosingKind, hits[i].EnclosingScope, hits[i].Line,
+		)
+		if err != nil {
+			return nil, err
+		}
+		hits[i].EnclosingSymbolID = id
+	}
+	return hits, nil
+}
+
+// InsertCallSite inserts a single call site row without resolving enclosing symbols. For tests only.
+func (s *Store) InsertCallSite(rec CallSiteRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`
+		INSERT INTO call_sites (callee_name, file_path, line, col, enclosing_name, enclosing_kind, enclosing_scope)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, rec.CalleeName, rec.FilePath, rec.Line, rec.Col, rec.EnclosingName, rec.EnclosingKind, rec.EnclosingScope)
+	if err != nil {
+		return fmt.Errorf("insert call site %q in %s:%d: %w", rec.CalleeName, rec.FilePath, rec.Line, err)
+	}
+	return nil
+}
+
+func (s *Store) resolveEnclosingSymbolID(filePath, name, kind, scope string, line int) (string, error) {
+	var startLine int
+	err := s.db.QueryRow(`
+		SELECT start_line
+		FROM symbols
+		WHERE file_path = ? AND name = ? AND kind = ? AND COALESCE(scope, '') = ?
+			AND start_line <= ? AND end_line >= ?
+		ORDER BY (end_line - start_line) ASC
+		LIMIT 1
+	`, filePath, name, kind, scope, line, line).Scan(&startLine)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("resolve enclosing symbol id: %w", err)
+	}
+	return FormatSymbolID(SymbolRecord{
+		FilePath:  filePath,
+		Kind:      kind,
+		Name:      name,
+		StartLine: startLine,
+	}), nil
 }
 
 // Search queries FTS5 and returns ranked hits joined with line-range metadata.

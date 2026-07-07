@@ -54,6 +54,40 @@ func TestInit_SymbolCount(t *testing.T) {
 	testutil.AssertMinInt(t, "symbols_indexed", m.SymbolsIndexedMin, symbols)
 }
 
+func TestFixtureFindCallers_ProcessPayment(t *testing.T) {
+	_, st, m := freshFixture(t)
+	hits, err := st.FindCallers("ProcessPayment", "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.AssertMinInt(t, "process_payment_callers", m.Callers.ProcessPaymentMinHits, len(hits))
+
+	want := m.Callers.ProcessPayment
+	var match *store.CallerHit
+	for i := range hits {
+		h := &hits[i]
+		if h.FilePath == want.FilePath && h.EnclosingSymbol == want.EnclosingSymbol {
+			match = h
+			break
+		}
+	}
+	if match == nil {
+		t.Fatalf("no caller hit in %s with enclosing %q; got %+v", want.FilePath, want.EnclosingSymbol, hits)
+	}
+	if match.Line != want.Line {
+		t.Fatalf("line = %d, want %d", match.Line, want.Line)
+	}
+	if match.Col != want.Col {
+		t.Fatalf("col = %d, want %d", match.Col, want.Col)
+	}
+	if match.EnclosingKind != want.EnclosingKind {
+		t.Fatalf("enclosing_kind = %q, want %q", match.EnclosingKind, want.EnclosingKind)
+	}
+	if match.EnclosingSymbolID != want.EnclosingSymbolID {
+		t.Fatalf("enclosing_symbol_id = %q, want %q", match.EnclosingSymbolID, want.EnclosingSymbolID)
+	}
+}
+
 func TestSearch_ExactHit(t *testing.T) {
 	_, st, m := freshFixture(t)
 	hits, err := st.Search("ProcessPayment", 10)
@@ -189,6 +223,20 @@ func TestRead_TraversalRejected(t *testing.T) {
 	if !errors.Is(err, read.ErrPathOutsideRoot) && !errors.Is(err, read.ErrFileNotFound) {
 		t.Fatalf("error = %v, want ErrPathOutsideRoot or ErrFileNotFound", err)
 	}
+}
+
+func TestMetrics_CallersTokenBudget(t *testing.T) {
+	_, st, m := freshFixture(t)
+	hits, err := st.FindCallers("ProcessPayment", "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(hits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens := testutil.EstimateTokens(string(data))
+	testutil.AssertMaxInt(t, "callers_token_budget", m.Thresholds.CallersTokenBudget, tokens)
 }
 
 func TestMetrics_SearchTokenBudget(t *testing.T) {
@@ -428,6 +476,57 @@ func TestInit_SummaryOutput(t *testing.T) {
 	}
 }
 
+func TestMCP_FixtureFindCallers(t *testing.T) {
+	root, st, m := freshFixture(t)
+	reader := testutil.NewReader(t, root)
+	coord := index.NewSyncCoordinator(root, st, index.NewRegexExtractor())
+	_, session, cleanup := connectMCPSession(t, root, st, reader, coord)
+	defer cleanup()
+
+	text := callToolText(t, session, "find_callers", map[string]any{
+		"name": "ProcessPayment",
+	})
+	var hits []map[string]any
+	if err := json.Unmarshal([]byte(text), &hits); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	testutil.AssertMinInt(t, "process_payment_callers", m.Callers.ProcessPaymentMinHits, len(hits))
+
+	want := m.Callers.ProcessPayment
+	var match map[string]any
+	for _, hit := range hits {
+		if hit["file_path"] == want.FilePath && hit["enclosing_symbol"] == want.EnclosingSymbol {
+			match = hit
+			break
+		}
+	}
+	if match == nil {
+		t.Fatalf("no caller hit in %s with enclosing %q; got %+v", want.FilePath, want.EnclosingSymbol, hits)
+	}
+
+	required := []string{
+		"callee_name", "file_path", "line", "col",
+		"enclosing_symbol", "enclosing_kind", "enclosing_scope", "enclosing_symbol_id",
+	}
+	for _, key := range required {
+		if _, ok := match[key]; !ok {
+			t.Fatalf("missing key %q", key)
+		}
+	}
+	if match["callee_name"] != "ProcessPayment" {
+		t.Fatalf("callee_name = %v, want ProcessPayment", match["callee_name"])
+	}
+	if int(match["line"].(float64)) != want.Line {
+		t.Fatalf("line = %v, want %d", match["line"], want.Line)
+	}
+	if int(match["col"].(float64)) != want.Col {
+		t.Fatalf("col = %v, want %d", match["col"], want.Col)
+	}
+	if match["enclosing_symbol_id"] != want.EnclosingSymbolID {
+		t.Fatalf("enclosing_symbol_id = %v, want %q", match["enclosing_symbol_id"], want.EnclosingSymbolID)
+	}
+}
+
 func TestMCP_FixtureSearchSchema(t *testing.T) {
 	root, st, _ := freshFixture(t)
 	reader := testutil.NewReader(t, root)
@@ -545,16 +644,20 @@ func TestMCP_FixtureReadLineFormat(t *testing.T) {
 	}
 }
 
-func connectMCPSession(t *testing.T, root string, st *store.Store, reader *read.Reader) (context.Context, *mcpsdk.ClientSession, func()) {
+func connectMCPSession(t *testing.T, root string, st *store.Store, reader *read.Reader, coord ...*index.SyncCoordinator) (context.Context, *mcpsdk.ClientSession, func()) {
 	t.Helper()
 	ctx := context.Background()
 	clientTransport, serverTransport := mcpsdk.NewInMemoryTransports()
-	server := litosmcp.NewServer(litosmcp.Config{
+	cfg := litosmcp.Config{
 		RepoRoot: root,
 		Store:    st,
 		Reader:   reader,
 		Version:  "test",
-	})
+	}
+	if len(coord) > 0 {
+		cfg.Coordinator = coord[0]
+	}
+	server := litosmcp.NewServer(cfg)
 	serverSession, err := server.Connect(ctx, serverTransport, nil)
 	if err != nil {
 		t.Fatal(err)

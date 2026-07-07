@@ -56,7 +56,7 @@ func TestFTS5_InsertAndSearch(t *testing.T) {
 		{Name: "ProcessPayment", Kind: "function", Scope: "BillingService", StartLine: 45, EndLine: 75},
 		{Name: "RefundPayment", Kind: "function", Scope: "BillingService", StartLine: 80, EndLine: 95},
 	}
-	if err := st.UpsertFile(meta, symbols); err != nil {
+	if err := st.UpsertFile(meta, symbols, nil); err != nil {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestFTS5_TriggersSyncOnUpdateAndDelete(t *testing.T) {
 	meta := store.FileMeta{Path: "a.go", MtimeNs: 1, Size: 10}
 	if err := st.UpsertFile(meta, []store.SymbolRecord{
 		{Name: "Alpha", Kind: "function", StartLine: 1, EndLine: 5},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -100,7 +100,7 @@ func TestFTS5_TriggersSyncOnUpdateAndDelete(t *testing.T) {
 	// Re-upsert with renamed symbol to exercise UPDATE trigger path via delete+insert.
 	if err := st.UpsertFile(store.FileMeta{Path: "a.go", MtimeNs: 2, Size: 10}, []store.SymbolRecord{
 		{Name: "Beta", Kind: "function", StartLine: 1, EndLine: 5},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -139,7 +139,7 @@ func TestUpsertFile_PerFileAtomicity(t *testing.T) {
 	if err := st.UpsertFile(store.FileMeta{Path: "x.go", MtimeNs: 100, Size: 50}, []store.SymbolRecord{
 		{Name: "Foo", Kind: "function", StartLine: 1, EndLine: 3},
 		{Name: "Bar", Kind: "type", StartLine: 10, EndLine: 20},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -151,7 +151,7 @@ func TestUpsertFile_PerFileAtomicity(t *testing.T) {
 	// Replace symbols entirely in one upsert.
 	if err := st.UpsertFile(store.FileMeta{Path: "x.go", MtimeNs: 200, Size: 60}, []store.SymbolRecord{
 		{Name: "Baz", Kind: "function", StartLine: 5, EndLine: 8},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -166,6 +166,87 @@ func TestUpsertFile_PerFileAtomicity(t *testing.T) {
 	}
 	if meta.MtimeNs != 200 || meta.Size != 60 {
 		t.Fatalf("file meta not updated: %+v", meta)
+	}
+}
+
+func TestUpsertFile_CallSitesReplaceAndEnclosing(t *testing.T) {
+	st, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	symbols := []store.SymbolRecord{
+		{Name: "Handler", Kind: "type", StartLine: 1, EndLine: 20},
+		{Name: "Run", Kind: "function", Scope: "Handler", StartLine: 5, EndLine: 15},
+	}
+	calls := []store.CallSiteRecord{
+		{CalleeName: "ProcessPayment", FilePath: "svc.go", Line: 10, Col: 8},
+	}
+
+	if err := st.UpsertFile(store.FileMeta{Path: "svc.go", MtimeNs: 1, Size: 10}, symbols, calls); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := st.CallSiteCount()
+	if err != nil || n != 1 {
+		t.Fatalf("CallSiteCount = %d, err = %v, want 1", n, err)
+	}
+
+	hits, err := st.FindCallers("ProcessPayment", "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("FindCallers: got %d hits", len(hits))
+	}
+	if hits[0].EnclosingSymbol != "Run" || hits[0].EnclosingKind != "function" || hits[0].EnclosingScope != "Handler" {
+		t.Fatalf("unexpected enclosing: %+v", hits[0])
+	}
+
+	if err := st.UpsertFile(store.FileMeta{Path: "svc.go", MtimeNs: 2, Size: 12}, symbols, []store.CallSiteRecord{
+		{CalleeName: "RefundPayment", FilePath: "svc.go", Line: 12, Col: 4},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err = st.CallSiteCount()
+	if err != nil || n != 1 {
+		t.Fatalf("CallSiteCount after replace = %d, want 1", n)
+	}
+	hits, err = st.FindCallers("ProcessPayment", "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("old call site still present: %+v", hits)
+	}
+	hits, err = st.FindCallers("RefundPayment", "", 20)
+	if err != nil || len(hits) != 1 {
+		t.Fatalf("RefundPayment callers: %+v err=%v", hits, err)
+	}
+}
+
+func TestRemoveFile_DeletesCallSites(t *testing.T) {
+	st, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if err := st.UpsertFile(store.FileMeta{Path: "drop.go", MtimeNs: 1, Size: 1}, nil, []store.CallSiteRecord{
+		{CalleeName: "Dropped", FilePath: "drop.go", Line: 1, Col: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.RemoveFile("drop.go"); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := st.CallSiteCount()
+	if err != nil || n != 0 {
+		t.Fatalf("CallSiteCount after remove = %d, want 0", n)
 	}
 }
 
@@ -184,7 +265,7 @@ func TestIncremental_IsStale(t *testing.T) {
 		t.Fatal("unindexed file should be stale")
 	}
 
-	if err := st.UpsertFile(store.FileMeta{Path: "main.go", MtimeNs: 1000, Size: 42}, nil); err != nil {
+	if err := st.UpsertFile(store.FileMeta{Path: "main.go", MtimeNs: 1000, Size: 42}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -213,7 +294,7 @@ func TestSearch_MultiToken(t *testing.T) {
 
 	if err := st.UpsertFile(store.FileMeta{Path: "auth/jwt.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
 		{Name: "VerifyToken", Kind: "function", Scope: "jwt verification", StartLine: 10, EndLine: 30},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -239,7 +320,7 @@ func TestSearch_LimitRespected(t *testing.T) {
 			Name: "HelperFunc", Kind: "function", StartLine: i + 1, EndLine: i + 2,
 		})
 	}
-	if err := st.UpsertFile(store.FileMeta{Path: "helpers.go", MtimeNs: 1, Size: 1}, symbols); err != nil {
+	if err := st.UpsertFile(store.FileMeta{Path: "helpers.go", MtimeNs: 1, Size: 1}, symbols, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -261,7 +342,7 @@ func TestSearch_LikeFallback(t *testing.T) {
 
 	if err := st.UpsertFile(store.FileMeta{Path: "weird.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
 		{Name: "FuncWith*Star", Kind: "function", StartLine: 1, EndLine: 2},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -283,7 +364,7 @@ func TestSearch_EmptyScopeUsesCOALESCE(t *testing.T) {
 
 	if err := st.UpsertFile(store.FileMeta{Path: "plain.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
 		{Name: "NoScopeFn", Kind: "function", Scope: "", StartLine: 1, EndLine: 1},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -317,7 +398,7 @@ func TestWAL_ConcurrentReadDuringWrite(t *testing.T) {
 			syms := []store.SymbolRecord{
 				{Name: "Worker", Kind: "function", StartLine: 1, EndLine: 2},
 			}
-			if err := st.UpsertFile(meta, syms); err != nil {
+			if err := st.UpsertFile(meta, syms, nil); err != nil {
 				errCh <- err
 				return
 			}
@@ -354,10 +435,10 @@ func TestListFilesAndRemoveFile(t *testing.T) {
 	}
 	defer st.Close()
 
-	if err := st.UpsertFile(store.FileMeta{Path: "a.go", MtimeNs: 1, Size: 1}, nil); err != nil {
+	if err := st.UpsertFile(store.FileMeta{Path: "a.go", MtimeNs: 1, Size: 1}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.UpsertFile(store.FileMeta{Path: "b.go", MtimeNs: 2, Size: 2}, nil); err != nil {
+	if err := st.UpsertFile(store.FileMeta{Path: "b.go", MtimeNs: 2, Size: 2}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -404,12 +485,12 @@ func TestSearch_MatchModeOR(t *testing.T) {
 
 	if err := st.UpsertFile(store.FileMeta{Path: "a.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
 		{Name: "AlphaFunc", Kind: "function", StartLine: 1, EndLine: 5},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.UpsertFile(store.FileMeta{Path: "b.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
 		{Name: "BetaFunc", Kind: "function", StartLine: 1, EndLine: 5},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -441,7 +522,7 @@ func TestSearch_EmptyResultFallback(t *testing.T) {
 
 	if err := st.UpsertFile(store.FileMeta{Path: "src/billing.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
 		{Name: "ProcessPayment", Kind: "function", StartLine: 10, EndLine: 20},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -470,7 +551,7 @@ func TestSearch_MatchedInPath(t *testing.T) {
 
 	if err := st.UpsertFile(store.FileMeta{Path: "internal/auth/jwt.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
 		{Name: "Verify", Kind: "function", StartLine: 5, EndLine: 15},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -495,7 +576,7 @@ func TestSearch_MatchedInKind(t *testing.T) {
 
 	if err := st.UpsertFile(store.FileMeta{Path: "models.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
 		{Name: "User", Kind: "interface", Scope: "models", StartLine: 1, EndLine: 10},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -589,7 +670,7 @@ func TestUpsertFile_ByteColumnsRoundTrip(t *testing.T) {
 			StartLine: 80, EndLine: 95,
 		},
 	}
-	if err := st.UpsertFile(meta, symbols); err != nil {
+	if err := st.UpsertFile(meta, symbols, nil); err != nil {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
@@ -632,7 +713,7 @@ func TestGetSymbolByID(t *testing.T) {
 	symbols := []store.SymbolRecord{
 		{Name: "ProcessPayment", Kind: "function", Scope: "BillingService", StartLine: 45, EndLine: 75},
 	}
-	if err := st.UpsertFile(meta, symbols); err != nil {
+	if err := st.UpsertFile(meta, symbols, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -663,7 +744,7 @@ func TestListSymbolsByFile(t *testing.T) {
 	if err := st.UpsertFile(store.FileMeta{Path: "x.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
 		{Name: "Beta", Kind: "function", StartLine: 20, EndLine: 25},
 		{Name: "Alpha", Kind: "type", StartLine: 5, EndLine: 10},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -697,12 +778,12 @@ func TestSearch_NameMatchExact(t *testing.T) {
 	if err := st.UpsertFile(store.FileMeta{Path: "a.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
 		{Name: "ProcessPayment", Kind: "function", StartLine: 10, EndLine: 20},
 		{Name: "ProcessPaymentHelper", Kind: "function", StartLine: 25, EndLine: 30},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.UpsertFile(store.FileMeta{Path: "b.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
 		{Name: "processpayment", Kind: "function", StartLine: 5, EndLine: 8},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -734,7 +815,7 @@ func TestSearch_NameMatchExactCaseSensitive(t *testing.T) {
 
 	if err := st.UpsertFile(store.FileMeta{Path: "a.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
 		{Name: "processpayment", Kind: "function", StartLine: 1, EndLine: 2},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -758,7 +839,7 @@ func TestSearch_NameMatchContains(t *testing.T) {
 		{Name: "ProcessPayment", Kind: "function", StartLine: 10, EndLine: 20},
 		{Name: "ProcessPaymentHelper", Kind: "function", StartLine: 25, EndLine: 30},
 		{Name: "Refund", Kind: "function", StartLine: 40, EndLine: 45},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -788,7 +869,7 @@ func TestSearch_NameMatchContainsSpecialChars(t *testing.T) {
 
 	if err := st.UpsertFile(store.FileMeta{Path: "weird.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
 		{Name: "FuncWith*Star", Kind: "function", StartLine: 1, EndLine: 2},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -810,7 +891,7 @@ func TestSearch_NameMatchRoundTrip(t *testing.T) {
 
 	if err := st.UpsertFile(store.FileMeta{Path: "src/billing.go", MtimeNs: 1, Size: 1}, []store.SymbolRecord{
 		{Name: "ProcessPayment", Kind: "function", Scope: "BillingService", StartLine: 45, EndLine: 75},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -844,5 +925,166 @@ func TestSearch_InvalidNameMatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid name_match") {
 		t.Fatalf("error = %q, want invalid name_match", err.Error())
+	}
+}
+
+func insertCallSite(t *testing.T, st *store.Store, rec store.CallSiteRecord) {
+	t.Helper()
+	if err := st.InsertCallSite(rec); err != nil {
+		t.Fatalf("insert call site: %v", err)
+	}
+}
+
+func TestResolveEnclosingSymbol(t *testing.T) {
+	symbols := []store.SymbolRecord{
+		{Name: "PaymentHandler", Kind: "type", Scope: "", StartLine: 11, EndLine: 52},
+		{Name: "HandleCharge", Kind: "function", Scope: "PaymentHandler", StartLine: 21, EndLine: 33},
+		{Name: "inner", Kind: "block", Scope: "", StartLine: 27, EndLine: 27},
+	}
+
+	name, kind, scope := store.ResolveEnclosingSymbol(symbols, 27)
+	if name != "inner" || kind != "block" || scope != "" {
+		t.Fatalf("line 27: got (%q, %q, %q), want (inner, block, \"\")", name, kind, scope)
+	}
+
+	name, kind, scope = store.ResolveEnclosingSymbol(symbols, 28)
+	if name != "HandleCharge" || kind != "function" || scope != "PaymentHandler" {
+		t.Fatalf("line 28: got (%q, %q, %q), want (HandleCharge, function, PaymentHandler)", name, kind, scope)
+	}
+
+	name, kind, scope = store.ResolveEnclosingSymbol(symbols, 5)
+	if name != "" || kind != "" || scope != "" {
+		t.Fatalf("line 5: got (%q, %q, %q), want empty", name, kind, scope)
+	}
+}
+
+func TestFindCallers_ProcessPayment(t *testing.T) {
+	st, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	paymentPath := "src/handlers/payment.go"
+	if err := st.UpsertFile(store.FileMeta{Path: paymentPath, MtimeNs: 1, Size: 100}, []store.SymbolRecord{
+		{Name: "PaymentHandler", Kind: "type", StartLine: 11, EndLine: 52},
+		{Name: "HandleCharge", Kind: "function", Scope: "PaymentHandler", StartLine: 21, EndLine: 33},
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	insertCallSite(t, st, store.CallSiteRecord{
+		CalleeName:     "ProcessPayment",
+		FilePath:       paymentPath,
+		Line:           27,
+		Col:            18,
+		EnclosingName:  "HandleCharge",
+		EnclosingKind:  "function",
+		EnclosingScope: "PaymentHandler",
+	})
+
+	hits, err := st.FindCallers("ProcessPayment", "", 20)
+	if err != nil {
+		t.Fatalf("FindCallers: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("got %d hits, want 1", len(hits))
+	}
+	h := hits[0]
+	if h.FilePath != paymentPath || h.Line != 27 || h.Col != 18 {
+		t.Fatalf("unexpected location: %+v", h)
+	}
+	if h.EnclosingSymbol != "HandleCharge" || h.EnclosingKind != "function" || h.EnclosingScope != "PaymentHandler" {
+		t.Fatalf("unexpected enclosing: %+v", h)
+	}
+	wantID := "src/handlers/payment.go#function#HandleCharge#21"
+	if h.EnclosingSymbolID != wantID {
+		t.Fatalf("enclosing_symbol_id = %q, want %q", h.EnclosingSymbolID, wantID)
+	}
+}
+
+func TestFindCallers_DirFilterAndLimit(t *testing.T) {
+	st, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	for i, path := range []string{"src/a.go", "src/handlers/b.go", "other/c.go"} {
+		insertCallSite(t, st, store.CallSiteRecord{
+			CalleeName: "Target",
+			FilePath:   path,
+			Line:       i + 1,
+		})
+	}
+
+	hits, err := st.FindCallers("Target", "src/handlers", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].FilePath != "src/handlers/b.go" {
+		t.Fatalf("dir filter: %+v", hits)
+	}
+
+	hits, err = st.FindCallers("Target", "src", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("limit: got %d hits, want 1", len(hits))
+	}
+
+	hits, err = st.FindCallers("Target", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 3 {
+		t.Fatalf("default limit: got %d hits, want 3", len(hits))
+	}
+}
+
+func TestFindCallers_CaseSensitiveAndEmpty(t *testing.T) {
+	st, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	insertCallSite(t, st, store.CallSiteRecord{
+		CalleeName: "Foo",
+		FilePath:   "a.go",
+		Line:       1,
+	})
+
+	hits, err := st.FindCallers("foo", "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("case-sensitive: got %d hits, want 0", len(hits))
+	}
+
+	hits, err = st.FindCallers("  ", "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hits != nil {
+		t.Fatalf("empty name: got %v, want nil", hits)
+	}
+}
+
+func TestOpen_CreatesCallSitesTable(t *testing.T) {
+	st, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	n, err := st.CallSiteCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("CallSiteCount = %d, want 0", n)
 	}
 }

@@ -15,8 +15,20 @@
     "start_line": 56,
     "end_line": 69
   },
+  "callers": {
+    "process_payment": {
+      "file_path": "src/handlers/payment.go",
+      "line": 27,
+      "col": 25,
+      "enclosing_symbol": "HandleCharge",
+      "enclosing_kind": "function",
+      "enclosing_symbol_id": "src/handlers/payment.go#function#HandleCharge#21"
+    },
+    "process_payment_min_hits": 1
+  },
   "thresholds": {
     "search_token_budget": 600,
+    "callers_token_budget": 300,
     "read_token_budget": 400,
     "read_vs_whole_file_ratio_max": 0.2,
     "index_size_bytes_max": 512000,

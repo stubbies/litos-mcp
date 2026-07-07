@@ -123,3 +123,47 @@ type FileMeta struct {
 	MtimeNs int64
 	Size    int64
 }
+
+// CallSiteRecord is a callee invocation extracted from a source file.
+type CallSiteRecord struct {
+	CalleeName     string
+	FilePath       string
+	Line           int
+	Col            int
+	EnclosingName  string
+	EnclosingKind  string
+	EnclosingScope string
+}
+
+// CallerHit is a JSON-serializable find_callers result.
+type CallerHit struct {
+	CalleeName        string `json:"callee_name"`
+	FilePath          string `json:"file_path"`
+	Line              int    `json:"line"`
+	Col               int    `json:"col"`
+	EnclosingSymbol   string `json:"enclosing_symbol"`
+	EnclosingKind     string `json:"enclosing_kind"`
+	EnclosingScope    string `json:"enclosing_scope"`
+	EnclosingSymbolID string `json:"enclosing_symbol_id,omitempty"`
+}
+
+// ResolveEnclosingSymbol returns the innermost indexed symbol enclosing line.
+// On overlap, the symbol with the smallest line span wins.
+func ResolveEnclosingSymbol(symbols []SymbolRecord, line int) (name, kind, scope string) {
+	var best *SymbolRecord
+	bestSpan := -1
+	for i := range symbols {
+		sym := &symbols[i]
+		if sym.StartLine <= line && line <= sym.EndLine {
+			span := sym.EndLine - sym.StartLine
+			if best == nil || span < bestSpan {
+				best = sym
+				bestSpan = span
+			}
+		}
+	}
+	if best == nil {
+		return "", "", ""
+	}
+	return best.Name, best.Kind, best.Scope
+}

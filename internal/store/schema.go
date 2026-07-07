@@ -21,6 +21,20 @@ CREATE TABLE IF NOT EXISTS symbols (
 
 CREATE INDEX IF NOT EXISTS idx_symbols_file_path ON symbols(file_path);
 
+CREATE TABLE IF NOT EXISTS call_sites (
+  id INTEGER PRIMARY KEY,
+  callee_name TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  line INTEGER NOT NULL,
+  col INTEGER NOT NULL DEFAULT 0,
+  enclosing_name TEXT NOT NULL DEFAULT '',
+  enclosing_kind TEXT NOT NULL DEFAULT '',
+  enclosing_scope TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_call_sites_callee ON call_sites(callee_name);
+CREATE INDEX IF NOT EXISTS idx_call_sites_file ON call_sites(file_path);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
   name,
   file_path,

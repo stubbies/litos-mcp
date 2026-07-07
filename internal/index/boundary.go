@@ -17,3 +17,11 @@ func BoundaryDescription() string {
 	}
 	return "line-range only"
 }
+
+// CallersIndexer returns the active call-site extraction mode: "treesitter" or "regex".
+func CallersIndexer() string {
+	if treesitter.CallSitesEnabled() {
+		return "treesitter"
+	}
+	return "regex"
+}

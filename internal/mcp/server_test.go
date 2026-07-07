@@ -447,6 +447,9 @@ func TestMCP_PromptCodeDiscoveryWorkflow(t *testing.T) {
 	if !strings.Contains(text.Text, "search_code_skeleton") {
 		t.Fatalf("prompt missing search guidance: %q", text.Text)
 	}
+	if !strings.Contains(text.Text, "find_callers") {
+		t.Fatalf("prompt missing find_callers guidance: %q", text.Text)
+	}
 }
 
 func TestMCP_ReadFileNotFound(t *testing.T) {
@@ -534,7 +537,7 @@ func TestMCP_IndexStatusResource(t *testing.T) {
 		t.Fatalf("status response is not JSON object: %v\nbody: %s", err, text)
 	}
 
-	for _, key := range []string{"reconcile_needed", "files", "symbols", "indexer", "boundary_indexer"} {
+	for _, key := range []string{"reconcile_needed", "files", "symbols", "call_sites", "indexer", "boundary_indexer", "callers_indexer"} {
 		if _, ok := status[key]; !ok {
 			t.Fatalf("status missing key %q: %#v", key, status)
 		}
@@ -542,10 +545,196 @@ func TestMCP_IndexStatusResource(t *testing.T) {
 	if status["boundary_indexer"] != index.BoundaryIndexer() {
 		t.Fatalf("boundary_indexer = %v, want %q", status["boundary_indexer"], index.BoundaryIndexer())
 	}
+	if status["callers_indexer"] != index.CallersIndexer() {
+		t.Fatalf("callers_indexer = %v, want %q", status["callers_indexer"], index.CallersIndexer())
+	}
 	if status["files"].(float64) < 1 {
 		t.Fatalf("files = %v, want >= 1", status["files"])
 	}
 	if status["symbols"].(float64) < 1 {
 		t.Fatalf("symbols = %v, want >= 1", status["symbols"])
+	}
+}
+
+func setupCallersTestServer(t *testing.T) (*mcpsdk.ClientSession, func()) {
+	t.Helper()
+
+	root := t.TempDir()
+	writeGoFile(t, root, "main.go", "package main\n\nfunc ProcessPayment() {}\n\nfunc HandleCharge() {\n\tProcessPayment()\n}\n")
+
+	st, err := store.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := index.Reindex(context.Background(), root, st, index.NewRegexExtractor()); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := read.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	coord := index.NewSyncCoordinator(root, st, index.NewRegexExtractor())
+
+	ctx := context.Background()
+	clientTransport, serverTransport := mcpsdk.NewInMemoryTransports()
+	server := litosmcp.NewServer(litosmcp.Config{
+		RepoRoot:    root,
+		Store:       st,
+		Reader:      reader,
+		Version:     "test",
+		Coordinator: coord,
+	})
+
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "test-client"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup := func() {
+		clientSession.Close()
+		serverSession.Close()
+		serverSession.Wait()
+		st.Close()
+	}
+	return clientSession, cleanup
+}
+
+func TestMCP_FindCallersByName(t *testing.T) {
+	session, cleanup := setupCallersTestServer(t)
+	defer cleanup()
+
+	text := callToolText(t, session, "find_callers", map[string]any{
+		"name": "ProcessPayment",
+	})
+
+	var hits []map[string]any
+	if err := json.Unmarshal([]byte(text), &hits); err != nil {
+		t.Fatalf("find_callers response is not JSON array: %v\nbody: %s", err, text)
+	}
+	if len(hits) < 1 {
+		t.Fatalf("expected at least 1 hit, got %d", len(hits))
+	}
+
+	var callerHit map[string]any
+	for _, hit := range hits {
+		if hit["enclosing_symbol"] == "HandleCharge" {
+			callerHit = hit
+			break
+		}
+	}
+	if callerHit == nil {
+		t.Fatalf("no hit with enclosing HandleCharge: %+v", hits)
+	}
+
+	required := []string{
+		"callee_name", "file_path", "line", "col",
+		"enclosing_symbol", "enclosing_kind", "enclosing_scope", "enclosing_symbol_id",
+	}
+	for _, key := range required {
+		if _, ok := callerHit[key]; !ok {
+			t.Fatalf("hit missing key %q: %#v", key, callerHit)
+		}
+	}
+	if callerHit["callee_name"] != "ProcessPayment" {
+		t.Fatalf("callee_name = %v, want ProcessPayment", callerHit["callee_name"])
+	}
+	if callerHit["enclosing_symbol_id"] != "main.go#function#HandleCharge#5" {
+		t.Fatalf("enclosing_symbol_id = %v, want main.go#function#HandleCharge#5", callerHit["enclosing_symbol_id"])
+	}
+}
+
+func TestMCP_FindCallersBySymbolID(t *testing.T) {
+	session, cleanup := setupCallersTestServer(t)
+	defer cleanup()
+
+	text := callToolText(t, session, "find_callers", map[string]any{
+		"symbol_id": "main.go#function#ProcessPayment#3",
+	})
+
+	var hits []map[string]any
+	if err := json.Unmarshal([]byte(text), &hits); err != nil {
+		t.Fatal(err)
+	}
+	var callerHit map[string]any
+	for _, hit := range hits {
+		if hit["enclosing_symbol"] == "HandleCharge" {
+			callerHit = hit
+			break
+		}
+	}
+	if callerHit == nil {
+		t.Fatalf("no hit with enclosing HandleCharge: %+v", hits)
+	}
+}
+
+func TestMCP_FindCallersMissingInput(t *testing.T) {
+	session, cleanup := setupCallersTestServer(t)
+	defer cleanup()
+
+	res, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "find_callers",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatal("expected tool error when name and symbol_id are missing")
+	}
+	text := res.Content[0].(*mcpsdk.TextContent).Text
+	if !strings.Contains(text, "name or symbol_id is required") {
+		t.Fatalf("error text = %q, want name or symbol_id is required", text)
+	}
+}
+
+func TestMCP_FindCallersNoHits(t *testing.T) {
+	session, cleanup := setupCallersTestServer(t)
+	defer cleanup()
+
+	res, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name: "find_callers",
+		Arguments: map[string]any{
+			"name": "NobodyCallsThis",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatal("expected tool error when no callers found")
+	}
+	text := res.Content[0].(*mcpsdk.TextContent).Text
+	if !strings.Contains(text, "no callers found") || !strings.Contains(text, "search_code_skeleton") {
+		t.Fatalf("error text = %q, want no callers hint with search_code_skeleton", text)
+	}
+}
+
+func TestMCP_FindCallersInvalidSymbolID(t *testing.T) {
+	session, cleanup := setupCallersTestServer(t)
+	defer cleanup()
+
+	res, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name: "find_callers",
+		Arguments: map[string]any{
+			"symbol_id": "bad-id",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatal("expected tool error for invalid symbol_id")
+	}
+	text := res.Content[0].(*mcpsdk.TextContent).Text
+	if !strings.Contains(text, "invalid symbol id") {
+		t.Fatalf("error text = %q, want invalid symbol id", text)
 	}
 }

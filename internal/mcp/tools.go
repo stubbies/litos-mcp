@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stubbies/litos-mcp/internal/index"
@@ -24,6 +25,9 @@ const (
 		"Use when you know the file path and need its structure before fetching symbols with read_symbol."
 	reindexToolDescription = "Runs a full crawl and re-extract of the repository index. " +
 		"Use after large changes (e.g. git pull) or when search hits seem stale; normal edits are synced automatically."
+	findCallersToolDescription = "Finds indexed call sites for a callee by exact name (case-sensitive, no type resolution). " +
+		"Pass name or symbol_id from search_code_skeleton. Use dir to limit to a repo-relative directory prefix. " +
+		"If no hits, the indexed callee name may differ — try search_code_skeleton first."
 )
 
 type searchInput struct {
@@ -52,6 +56,13 @@ type reindexResult struct {
 	Symbols   int    `json:"symbols"`
 	Indexer   string `json:"indexer"`
 	ElapsedMs int64  `json:"elapsed_ms"`
+}
+
+type findCallersInput struct {
+	Name     string `json:"name,omitempty" jsonschema:"Callee symbol name (exact, case-sensitive). Required unless symbol_id is set."`
+	SymbolID string `json:"symbol_id,omitempty" jsonschema:"Parse callee name from a search_code_skeleton symbol_id when name is omitted."`
+	Dir      string `json:"dir,omitempty" jsonschema:"Optional repo-relative directory prefix filter."`
+	Limit    int    `json:"limit,omitempty" jsonschema:"Maximum caller hits to return (default 20)."`
 }
 
 type toolEnv struct {
@@ -85,6 +96,11 @@ func registerTools(server *mcpsdk.Server, env *toolEnv) {
 		Name:        "reindex_index",
 		Description: reindexToolDescription,
 	}, env.handleReindex)
+
+	mcpsdk.AddTool(server, &mcpsdk.Tool{
+		Name:        "find_callers",
+		Description: findCallersToolDescription,
+	}, env.handleFindCallers)
 }
 
 func (e *toolEnv) handleSearch(ctx context.Context, _ *mcpsdk.CallToolRequest, in searchInput) (*mcpsdk.CallToolResult, any, error) {
@@ -156,6 +172,56 @@ func (e *toolEnv) handleRead(_ context.Context, _ *mcpsdk.CallToolRequest, in re
 	}
 	return &mcpsdk.CallToolResult{
 		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: text}},
+	}, nil, nil
+}
+
+func (e *toolEnv) handleFindCallers(ctx context.Context, _ *mcpsdk.CallToolRequest, in findCallersInput) (*mcpsdk.CallToolResult, any, error) {
+	name := strings.TrimSpace(in.Name)
+	if name == "" && in.SymbolID != "" {
+		rec, err := store.ParseSymbolID(in.SymbolID)
+		if err != nil {
+			return nil, nil, mapSymbolError(in.SymbolID, err)
+		}
+		name = rec.Name
+	}
+	if name == "" {
+		return nil, nil, fmt.Errorf("name or symbol_id is required")
+	}
+
+	if e.coordinator != nil {
+		e.coordinator.EnsureFresh(ctx)
+	}
+
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+
+	hits, err := e.store.FindCallers(name, in.Dir, limit)
+	if err != nil {
+		return nil, nil, fmt.Errorf("find callers: %w", err)
+	}
+	return callersResult(name, hits)
+}
+
+func callersResult(name string, hits []store.CallerHit) (*mcpsdk.CallToolResult, any, error) {
+	if hits == nil {
+		hits = []store.CallerHit{}
+	}
+	if len(hits) == 0 {
+		return &mcpsdk.CallToolResult{
+			IsError: true,
+			Content: []mcpsdk.Content{&mcpsdk.TextContent{
+				Text: fmt.Sprintf("no callers found for %q (exact name match); the indexed callee name may differ — try search_code_skeleton first", name),
+			}},
+		}, nil, nil
+	}
+	data, err := json.Marshal(hits)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal caller hits: %w", err)
+	}
+	return &mcpsdk.CallToolResult{
+		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: string(data)}},
 	}, nil, nil
 }
 

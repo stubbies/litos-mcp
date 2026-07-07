@@ -29,9 +29,11 @@ type SyncStatus struct {
 	ReconcileNeeded  bool   `json:"reconcile_needed"`
 	Files            int    `json:"files"`
 	Symbols          int    `json:"symbols"`
+	CallSites        int    `json:"call_sites"`
 	LastSyncAt       string `json:"last_sync_at,omitempty"`
 	Indexer          string `json:"indexer,omitempty"`
 	BoundaryIndexer  string `json:"boundary_indexer,omitempty"`
+	CallersIndexer   string `json:"callers_indexer,omitempty"`
 	HydrationMs      int64  `json:"hydration_ms,omitempty"`
 }
 
@@ -96,10 +98,15 @@ func SyncPaths(ctx context.Context, repoRoot string, st *store.Store, ext Extrac
 	if err != nil {
 		return fmt.Errorf("extract: %w", err)
 	}
+	calls, err := ExtractCallSites(ctx, repoRoot, paths)
+	if err != nil {
+		return fmt.Errorf("extract call sites: %w", err)
+	}
 	byFile := groupSymbolsByFile(extracted)
+	callsByFile := groupCallSitesByFile(calls)
 	for _, path := range paths {
 		meta := metaByPath[path]
-		if err := st.UpsertFile(meta, byFile[path]); err != nil {
+		if err := st.UpsertFile(meta, byFile[path], callsByFile[path]); err != nil {
 			return fmt.Errorf("upsert %s: %w", path, err)
 		}
 	}
@@ -582,13 +589,19 @@ func (c *SyncCoordinator) Status(ctx context.Context) (*SyncStatus, error) {
 	if err != nil {
 		return nil, fmt.Errorf("count symbols: %w", err)
 	}
+	callSites, err := c.store.CallSiteCount()
+	if err != nil {
+		return nil, fmt.Errorf("count call sites: %w", err)
+	}
 
 	status := &SyncStatus{
 		ReconcileNeeded: reconcileNeeded,
 		Files:           files,
 		Symbols:         symbols,
+		CallSites:       callSites,
 		Indexer:         c.ext.Name(),
 		BoundaryIndexer: BoundaryIndexer(),
+		CallersIndexer:  CallersIndexer(),
 	}
 
 	if v, ok, err := c.store.GetMeta(metaKeyLastSyncAt); err != nil {

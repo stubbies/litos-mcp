@@ -519,6 +519,67 @@ func TestSyncCoordinator_EnsureFreshHydratesStaleFile(t *testing.T) {
 	t.Fatal("EnsureFresh did not sync stale file within timeout")
 }
 
+func TestSyncCoordinator_SyncFileUpdatesCallSites(t *testing.T) {
+	root := t.TempDir()
+	writeGoFile(t, root, "caller.go", `package main
+
+func Work() {
+	ProcessPayment()
+}
+`)
+
+	st, err := store.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ext := index.NewRegexExtractor()
+	coord := index.NewSyncCoordinator(root, st, ext)
+	ctx := context.Background()
+
+	if err := coord.SyncFile(ctx, "caller.go"); err != nil {
+		t.Fatalf("SyncFile: %v", err)
+	}
+
+	hits, err := st.FindCallers("ProcessPayment", "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("ProcessPayment callers after sync: got %d", len(hits))
+	}
+	if hits[0].Line != 4 {
+		t.Fatalf("call line = %d, want 4", hits[0].Line)
+	}
+
+	writeGoFile(t, root, "caller.go", `package main
+
+func Work() {
+	RefundPayment()
+}
+`)
+	if err := coord.SyncFile(ctx, "caller.go"); err != nil {
+		t.Fatalf("SyncFile after edit: %v", err)
+	}
+
+	hits, err = st.FindCallers("ProcessPayment", "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("stale ProcessPayment call still indexed: %+v", hits)
+	}
+
+	hits, err = st.FindCallers("RefundPayment", "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("RefundPayment callers after edit: got %d", len(hits))
+	}
+}
+
 func TestStore_SetMetaGetMeta(t *testing.T) {
 	st, err := store.OpenMemory()
 	if err != nil {

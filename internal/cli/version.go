@@ -35,6 +35,7 @@ func runVersion(args []string) error {
 		os.Exit(1)
 	}
 	fmt.Printf("boundary: %s\n", index.BoundaryDescription())
+	fmt.Printf("callers: %s\n", index.CallersIndexer())
 	return nil
 }
 

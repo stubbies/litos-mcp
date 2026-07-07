@@ -33,8 +33,20 @@ type GoldenMetrics struct {
 		StartLine int    `json:"start_line"`
 		EndLine   int    `json:"end_line"`
 	} `json:"read_slice"`
+	Callers struct {
+		ProcessPayment struct {
+			FilePath          string `json:"file_path"`
+			Line              int    `json:"line"`
+			Col               int    `json:"col"`
+			EnclosingSymbol   string `json:"enclosing_symbol"`
+			EnclosingKind     string `json:"enclosing_kind"`
+			EnclosingSymbolID string `json:"enclosing_symbol_id"`
+		} `json:"process_payment"`
+		ProcessPaymentMinHits int `json:"process_payment_min_hits"`
+	} `json:"callers"`
 	Thresholds struct {
 		SearchTokenBudget        int     `json:"search_token_budget"`
+		CallersTokenBudget       int     `json:"callers_token_budget"`
 		ReadTokenBudget            int     `json:"read_token_budget"`
 		ReadVsWholeFileRatioMax    float64 `json:"read_vs_whole_file_ratio_max"`
 		IndexSizeBytesMax          int     `json:"index_size_bytes_max"`

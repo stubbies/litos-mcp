@@ -120,3 +120,27 @@ func TestMetrics_ReadSymbolTokenBudget(t *testing.T) {
 	tokens := testutil.EstimateTokens(text)
 	testutil.AssertMaxInt(t, "read_token_budget", m.Thresholds.ReadTokenBudget, tokens)
 }
+
+func TestFixtureFindCallers_TreesitterSkipsDeclarationFalsePositive(t *testing.T) {
+	_, st, m := freshFixtureTreesitter(t)
+	hits, err := st.FindCallers("ProcessPayment", "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hits {
+		if h.FilePath == "src/billing/billing.go" && h.Line == 56 {
+			t.Fatalf("tree-sitter should not index func declaration as call site: %+v", h)
+		}
+	}
+	want := m.Callers.ProcessPayment
+	found := false
+	for _, h := range hits {
+		if h.FilePath == want.FilePath && h.EnclosingSymbol == want.EnclosingSymbol {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing real caller in %s (HandleCharge); got %+v", want.FilePath, hits)
+	}
+}
