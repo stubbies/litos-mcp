@@ -571,6 +571,56 @@ func TestParseSymbolID_Invalid(t *testing.T) {
 	}
 }
 
+func TestUpsertFile_ByteColumnsRoundTrip(t *testing.T) {
+	st, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	meta := store.FileMeta{Path: "src/billing.go", MtimeNs: 1, Size: 100}
+	symbols := []store.SymbolRecord{
+		{
+			Name: "ProcessPayment", Kind: "function", Scope: "BillingService",
+			StartLine: 45, EndLine: 75, StartByte: 1200, EndByte: 3400,
+		},
+		{
+			Name: "RefundPayment", Kind: "function",
+			StartLine: 80, EndLine: 95,
+		},
+	}
+	if err := st.UpsertFile(meta, symbols); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	rec, err := st.GetSymbolByID("src/billing.go#function#ProcessPayment#45")
+	if err != nil {
+		t.Fatalf("GetSymbolByID: %v", err)
+	}
+	if rec.StartByte != 1200 || rec.EndByte != 3400 {
+		t.Fatalf("bytes = (%d, %d), want (1200, 3400)", rec.StartByte, rec.EndByte)
+	}
+
+	rec, err = st.GetSymbolByID("src/billing.go#function#RefundPayment#80")
+	if err != nil {
+		t.Fatalf("GetSymbolByID refund: %v", err)
+	}
+	if rec.StartByte != -1 || rec.EndByte != -1 {
+		t.Fatalf("unset bytes = (%d, %d), want (-1, -1)", rec.StartByte, rec.EndByte)
+	}
+
+	byFile, err := st.ListSymbolsByFile("src/billing.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byFile) != 2 {
+		t.Fatalf("got %d symbols, want 2", len(byFile))
+	}
+	if byFile[0].StartByte != 1200 || byFile[1].StartByte != -1 {
+		t.Fatalf("ListSymbolsByFile bytes: %+v", byFile)
+	}
+}
+
 func TestGetSymbolByID(t *testing.T) {
 	st, err := store.OpenMemory()
 	if err != nil {

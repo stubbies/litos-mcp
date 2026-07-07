@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            cgo: "0"
+            tags: ""
+          - name: treesitter
+            cgo: "1"
+            tags: treesitter
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        env:
+          CGO_ENABLED: ${{ matrix.cgo }}
+        run: go test ./... -count=1 -tags=${{ matrix.tags }}

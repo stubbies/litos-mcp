@@ -27,7 +27,8 @@
     "init_latency_ms": 5000,
     "hydration_ms": 150,
     "incremental_latency_ms": 500,
-    "init_db_bytes_tolerance_pct": 0.1
+    "init_db_bytes_tolerance_pct": 0.1,
+    "treesitter_refine_ms": 500
   },
   "init_db_bytes": 4096,
   "benchmarks": {

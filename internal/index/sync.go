@@ -26,12 +26,13 @@ const (
 
 // SyncStatus summarizes coordinator state for observability.
 type SyncStatus struct {
-	ReconcileNeeded bool   `json:"reconcile_needed"`
-	Files           int    `json:"files"`
-	Symbols         int    `json:"symbols"`
-	LastSyncAt      string `json:"last_sync_at,omitempty"`
-	Indexer         string `json:"indexer,omitempty"`
-	HydrationMs     int64  `json:"hydration_ms,omitempty"`
+	ReconcileNeeded  bool   `json:"reconcile_needed"`
+	Files            int    `json:"files"`
+	Symbols          int    `json:"symbols"`
+	LastSyncAt       string `json:"last_sync_at,omitempty"`
+	Indexer          string `json:"indexer,omitempty"`
+	BoundaryIndexer  string `json:"boundary_indexer,omitempty"`
+	HydrationMs      int64  `json:"hydration_ms,omitempty"`
 }
 
 // SyncOption configures optional SyncCoordinator behavior.
@@ -587,6 +588,7 @@ func (c *SyncCoordinator) Status(ctx context.Context) (*SyncStatus, error) {
 		Files:           files,
 		Symbols:         symbols,
 		Indexer:         c.ext.Name(),
+		BoundaryIndexer: BoundaryIndexer(),
 	}
 
 	if v, ok, err := c.store.GetMeta(metaKeyLastSyncAt); err != nil {

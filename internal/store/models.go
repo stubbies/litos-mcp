@@ -22,6 +22,8 @@ type SymbolRecord struct {
 	Scope     string
 	StartLine int
 	EndLine   int
+	StartByte int // -1 when unset (stored as NULL)
+	EndByte   int // -1 when unset (stored as NULL)
 }
 
 // FormatSymbolID returns a stable identifier derived from indexed symbol fields.

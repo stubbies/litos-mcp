@@ -56,6 +56,135 @@ func TestReadSymbol_DelegatesToReadLines(t *testing.T) {
 	}
 }
 
+func TestReadSymbol_ByteRangeExcludesSibling(t *testing.T) {
+	root := t.TempDir()
+	content := strings.Join([]string{
+		"package billing",
+		"",
+		"func ProcessPayment() {",
+		"	return nil",
+		"}",
+		"",
+		"func RefundPayment() {",
+		"	return nil",
+		"}",
+	}, "\n")
+	writeFile(t, filepath.Join(root, "src", "billing.go"), content)
+
+	startByte := strings.Index(content, "func ProcessPayment")
+	endByte := strings.Index(content, "\n\nfunc RefundPayment")
+	if startByte < 0 || endByte < 0 || endByte <= startByte {
+		t.Fatal("failed to locate function byte boundaries in fixture content")
+	}
+
+	r, err := read.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sym := store.SymbolRecord{
+		FilePath:  "src/billing.go",
+		Kind:      "function",
+		Name:      "ProcessPayment",
+		StartLine: 3,
+		EndLine:   7,
+		StartByte: startByte,
+		EndByte:   endByte,
+	}
+
+	got, err := r.ReadSymbol(sym)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "RefundPayment") {
+		t.Fatalf("ReadSymbol() leaked sibling symbol: %q", got)
+	}
+	if !strings.Contains(got, "func ProcessPayment() {") {
+		t.Fatalf("ReadSymbol() = %q, want ProcessPayment body", got)
+	}
+}
+
+func TestReadSymbol_StaleBytesFallbackToLines(t *testing.T) {
+	root := t.TempDir()
+	content := strings.Join([]string{
+		"package billing",
+		"",
+		"func ProcessPayment() {",
+		"	return nil",
+		"}",
+	}, "\n")
+	writeFile(t, filepath.Join(root, "src", "billing.go"), content)
+
+	r, err := read.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sym := store.SymbolRecord{
+		FilePath:  "src/billing.go",
+		Kind:      "function",
+		Name:      "ProcessPayment",
+		StartLine: 3,
+		EndLine:   5,
+		StartByte: len(content) + 100,
+		EndByte:   len(content) + 200,
+	}
+
+	got, err := r.ReadSymbol(sym)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "3\tfunc ProcessPayment() {\n4\t\treturn nil\n5\t}"
+	if got != want {
+		t.Fatalf("ReadSymbol() = %q, want line fallback %q", got, want)
+	}
+}
+
+func TestReadByteRange_LineFormat(t *testing.T) {
+	root := t.TempDir()
+	content := "alpha\nbeta\n"
+	writeFile(t, filepath.Join(root, "a.go"), content)
+
+	r, err := read.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := r.ReadByteRange("a.go", 0, len(content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "1\talpha\n2\tbeta"
+	if got != want {
+		t.Fatalf("ReadByteRange() = %q, want %q", got, want)
+	}
+}
+
+func TestReadByteRange_InvalidRange(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.go"), "line\n")
+
+	r, err := read.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		start, end int
+		wantErr    error
+	}{
+		{-1, 1, read.ErrInvalidRange},
+		{1, 1, read.ErrInvalidRange},
+		{2, 1, read.ErrInvalidRange},
+	}
+	for _, tc := range tests {
+		_, err := r.ReadByteRange("a.go", tc.start, tc.end)
+		if !errors.Is(err, tc.wantErr) {
+			t.Fatalf("ReadByteRange(%d,%d) error = %v, want %v", tc.start, tc.end, err, tc.wantErr)
+		}
+	}
+}
+
 func TestReadLines_InclusiveRange(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "src", "billing.go"), strings.Join([]string{

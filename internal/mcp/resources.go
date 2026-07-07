@@ -14,7 +14,7 @@ func registerResources(server *mcpsdk.Server, env *toolEnv) {
 	server.AddResource(&mcpsdk.Resource{
 		URI:         indexStatusURI,
 		Name:        "index_status",
-		Description: "Current litos-mcp index sync status (files, symbols, indexer, reconcile flag).",
+		Description: "Current litos-mcp index sync status (files, symbols, indexer, boundary_indexer, reconcile flag).",
 		MIMEType:    "application/json",
 	}, env.handleIndexStatus)
 }

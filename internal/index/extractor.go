@@ -23,11 +23,15 @@ type Extractor interface {
 }
 
 // NewExtractor returns a ctags extractor when available, otherwise regex.
+// When built with -tags treesitter, symbol boundaries are refined via tree-sitter.
 func NewExtractor() Extractor {
+	var primary Extractor
 	if cmd := CtagsCommand(); cmd != "" {
-		return NewCtagsExtractor(cmd)
+		primary = NewCtagsExtractor(cmd)
+	} else {
+		primary = NewRegexExtractor()
 	}
-	return NewRegexExtractor()
+	return &compositeExtractor{primary: primary}
 }
 
 // normalizeTagPath converts an absolute or relative ctags path to a repo-relative

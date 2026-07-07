@@ -140,8 +140,8 @@ func (s *Store) UpsertFile(meta FileMeta, symbols []SymbolRecord) error {
 	}
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO symbols (name, file_path, kind, scope, start_line, end_line)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO symbols (name, file_path, kind, scope, start_line, end_line, start_byte, end_byte)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return fmt.Errorf("prepare symbol insert: %w", err)
@@ -153,7 +153,8 @@ func (s *Store) UpsertFile(meta FileMeta, symbols []SymbolRecord) error {
 		if scope == "" {
 			scope = ""
 		}
-		if _, err := stmt.Exec(sym.Name, meta.Path, sym.Kind, scope, sym.StartLine, sym.EndLine); err != nil {
+		startByte, endByte := symbolByteColumns(sym)
+		if _, err := stmt.Exec(sym.Name, meta.Path, sym.Kind, scope, sym.StartLine, sym.EndLine, startByte, endByte); err != nil {
 			return fmt.Errorf("insert symbol %q in %s: %w", sym.Name, meta.Path, err)
 		}
 	}
@@ -468,12 +469,13 @@ func (s *Store) GetSymbolByID(id string) (SymbolRecord, error) {
 	}
 
 	var rec SymbolRecord
+	var startByte, endByte sql.NullInt64
 	err = s.db.QueryRow(`
-		SELECT name, file_path, kind, scope, start_line, end_line
+		SELECT name, file_path, kind, scope, start_line, end_line, start_byte, end_byte
 		FROM symbols
 		WHERE file_path = ? AND kind = ? AND name = ? AND start_line = ?
 	`, key.FilePath, key.Kind, key.Name, key.StartLine).Scan(
-		&rec.Name, &rec.FilePath, &rec.Kind, &rec.Scope, &rec.StartLine, &rec.EndLine,
+		&rec.Name, &rec.FilePath, &rec.Kind, &rec.Scope, &rec.StartLine, &rec.EndLine, &startByte, &endByte,
 	)
 	if err == sql.ErrNoRows {
 		return SymbolRecord{}, fmt.Errorf("%w: %s", ErrSymbolNotFound, id)
@@ -481,13 +483,15 @@ func (s *Store) GetSymbolByID(id string) (SymbolRecord, error) {
 	if err != nil {
 		return SymbolRecord{}, fmt.Errorf("get symbol by id: %w", err)
 	}
+	rec.StartByte = nullByteToInt(startByte)
+	rec.EndByte = nullByteToInt(endByte)
 	return rec, nil
 }
 
 // ListSymbolsByFile returns all symbols in filePath ordered by start_line.
 func (s *Store) ListSymbolsByFile(filePath string) ([]SymbolRecord, error) {
 	rows, err := s.db.Query(`
-		SELECT name, file_path, kind, scope, start_line, end_line
+		SELECT name, file_path, kind, scope, start_line, end_line, start_byte, end_byte
 		FROM symbols
 		WHERE file_path = ?
 		ORDER BY start_line
@@ -500,9 +504,12 @@ func (s *Store) ListSymbolsByFile(filePath string) ([]SymbolRecord, error) {
 	var symbols []SymbolRecord
 	for rows.Next() {
 		var rec SymbolRecord
-		if err := rows.Scan(&rec.Name, &rec.FilePath, &rec.Kind, &rec.Scope, &rec.StartLine, &rec.EndLine); err != nil {
+		var startByte, endByte sql.NullInt64
+		if err := rows.Scan(&rec.Name, &rec.FilePath, &rec.Kind, &rec.Scope, &rec.StartLine, &rec.EndLine, &startByte, &endByte); err != nil {
 			return nil, fmt.Errorf("scan symbol row: %w", err)
 		}
+		rec.StartByte = nullByteToInt(startByte)
+		rec.EndByte = nullByteToInt(endByte)
 		symbols = append(symbols, rec)
 	}
 	if err := rows.Err(); err != nil {
@@ -573,4 +580,25 @@ func escapeLike(s string) string {
 	s = strings.ReplaceAll(s, `%`, `\%`)
 	s = strings.ReplaceAll(s, `_`, `\_`)
 	return s
+}
+
+func intToNullByte(v int) sql.NullInt64 {
+	if v < 0 {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: int64(v), Valid: true}
+}
+
+func nullByteToInt(v sql.NullInt64) int {
+	if !v.Valid {
+		return -1
+	}
+	return int(v.Int64)
+}
+
+func symbolByteColumns(sym SymbolRecord) (sql.NullInt64, sql.NullInt64) {
+	if sym.StartByte < 0 || sym.EndByte <= sym.StartByte {
+		return sql.NullInt64{}, sql.NullInt64{}
+	}
+	return intToNullByte(sym.StartByte), intToNullByte(sym.EndByte)
 }

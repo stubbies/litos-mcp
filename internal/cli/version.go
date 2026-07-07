@@ -34,6 +34,7 @@ func runVersion(args []string) error {
 		fmt.Println("sqlite: FTS5 unavailable")
 		os.Exit(1)
 	}
+	fmt.Printf("boundary: %s\n", index.BoundaryDescription())
 	return nil
 }
 

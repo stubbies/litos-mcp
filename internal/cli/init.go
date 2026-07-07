@@ -41,12 +41,16 @@ func runInit(args []string) error {
 		return err
 	}
 
-	fmt.Printf("files=%d symbols=%d indexer=%s elapsed_ms=%d db_bytes=%d\n",
+	fmt.Printf("files=%d symbols=%d indexer=%s elapsed_ms=%d db_bytes=%d",
 		result.FilesIndexed,
 		result.SymbolsIndexed,
 		result.Indexer,
 		result.Elapsed.Milliseconds(),
 		result.DBBytes,
 	)
+	if index.BoundaryIndexer() == "treesitter" {
+		fmt.Print(" boundary=treesitter")
+	}
+	fmt.Println()
 	return nil
 }

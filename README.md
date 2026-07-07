@@ -14,7 +14,7 @@ It runs as a **single Go binary** over stdio inside Cursor, Claude Code, and oth
 - **Faster discovery** — FTS5 keyword search over symbols beats scrolling large grep dumps for “where is X implemented?”
 - **Stays fresh** — On `serve`, the index hydrates at startup, watches the repo for saves (`fsnotify`), and rechecks staleness before search. Normal edits do not require manual reindex.
 - **Private and offline** — Local cache only; respects `.gitignore` and common skip dirs (`node_modules`, `.git`, build outputs).
-- **Optional depth** — Install [Universal Ctags](https://github.com/universal-ctags/ctags) for broad multi-language symbol extraction, or use the built-in regex indexer for Go, TS/JS, and Python.
+- **Optional depth** — Install [Universal Ctags](https://github.com/universal-ctags/ctags) for broad multi-language symbol extraction, or use the built-in regex indexer for Go, TS/JS, and Python. Build with **`-tags treesitter`** (requires CGO) for byte-precise symbol boundaries on those same extensions.
 
 ## How it works
 
@@ -62,7 +62,17 @@ cd litos-mcp
 go build -o bin/litos-mcp ./cmd/litos-mcp
 ```
 
-Optional: install Universal Ctags for richer symbol extraction across many languages. Without it, litos-mcp falls back to built-in regex heuristics for **Go, TypeScript/JavaScript, and Python only** (`.go`, `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.py`, `.pyw`). Run `litos-mcp version` to see which indexer your install will use (`indexer: ctags available …` vs `regex fallback`).
+Optional: install Universal Ctags for richer symbol extraction across many languages. Without it, litos-mcp falls back to built-in regex heuristics for **Go, TypeScript/JavaScript, and Python only** (`.go`, `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.py`, `.pyw`). Run `litos-mcp version` to see which indexer your install will use (`indexer: ctags available …` vs `regex fallback`) and whether byte-precise boundaries are active (`boundary: tree-sitter (go, ts, py)` vs `boundary: line-range only`).
+
+### Byte-precise boundaries (optional)
+
+By default, `read_symbol` returns a **line-range slice** derived from the primary indexer (ctags or regex). For exact definition spans on Go, TS/JS, and Python, build with tree-sitter:
+
+```bash
+CGO_ENABLED=1 go build -tags treesitter -o bin/litos-mcp ./cmd/litos-mcp
+```
+
+Tree-sitter refines symbol `start_byte` / `end_byte` at index time; `read_symbol` prefers those bytes when present. This requires CGO and a C toolchain. After upgrading to a build with byte columns, **delete `.lcn_cache.db`** and run `litos-mcp init` — existing caches are not migrated automatically.
 
 ### Language support
 
@@ -140,7 +150,7 @@ Crawl discovers many file types, but the regex indexer only extracts symbols fro
    - `read_symbol` — read a bounded, line-numbered slice by `symbol_id` (preferred fetch path)
    - `read_file_lines` — read a bounded slice by file path and line range (fallback when you lack a `symbol_id`)
    - `reindex_index` — full index rebuild after large changes (e.g. `git pull`); normal saves sync automatically
-   - **`litos://index/status`** (MCP resource) — JSON sync status: file/symbol counts, indexer, `reconcile_needed`
+   - **`litos://index/status`** (MCP resource) — JSON sync status: file/symbol counts, indexer, `boundary_indexer` (`treesitter` or `none`), `reconcile_needed`
    - **`code_discovery_workflow`** (MCP prompt) — onboarding text for agents: discover → fetch by `symbol_id`
 
 `litos-mcp serve` auto-runs `init` when the cache is missing, then **hydrates** the index on startup (stat pass + boot crawl) and keeps it fresh with a **filesystem watcher** for debounced per-file updates. Search calls run a lightweight staleness check before FTS.
@@ -151,7 +161,7 @@ Crawl discovers many file types, but the regex indexer only extracts symbols fro
 |---------|-------------|
 | `litos-mcp init [--root PATH]` | Build or refresh `.lcn_cache.db` |
 | `litos-mcp serve` | MCP stdio server + boot hydration + fsnotify sync |
-| `litos-mcp version` | Print binary, Go, indexer, and FTS5 status |
+| `litos-mcp version` | Print binary, Go, indexer, boundary mode, and FTS5 status |
 
 ## Agent workflow
 
@@ -202,16 +212,23 @@ Refine search queries using symbol names, kinds, scopes, matched_in, and symbol_
 ## Development
 
 ```bash
-# Run tests (includes fixture golden metrics, token/size/latency thresholds)
-go test ./...
+# Default CI: line-range reads, no CGO
+CGO_ENABLED=0 go test ./...
+
+# Tree-sitter CI: byte-precise boundaries (requires CGO + C toolchain)
+CGO_ENABLED=1 go test -tags=treesitter ./...
 
 # Search benchmark + regression guard (2× baseline in testdata/metrics.json)
 go test -bench=BenchmarkFixtureSearch -benchtime=100ms ./internal/testutil/...
 
 # Dogfood litos-mcp in this repo with Claude Code
 go build -o ./litos-mcp ./cmd/litos-mcp
+# Optional byte-precise build:
+# CGO_ENABLED=1 go build -tags treesitter -o ./litos-mcp ./cmd/litos-mcp
 # then point .mcp.json command at ./litos-mcp or $(pwd)/litos-mcp
 ```
+
+GitHub Actions runs both jobs (default and `treesitter`) on push/PR — see `.github/workflows/ci.yml`.
 
 Fixture repo: `testdata/fixture-repo/` with expectations in `testdata/metrics.json`.
 

@@ -14,7 +14,9 @@ CREATE TABLE IF NOT EXISTS symbols (
   kind TEXT NOT NULL,
   scope TEXT NOT NULL DEFAULT '',
   start_line INTEGER NOT NULL,
-  end_line INTEGER NOT NULL
+  end_line INTEGER NOT NULL,
+  start_byte INTEGER,
+  end_byte INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_symbols_file_path ON symbols(file_path);

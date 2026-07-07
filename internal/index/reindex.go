@@ -107,6 +107,8 @@ func groupSymbolsByFile(symbols []store.SymbolRecord) map[string][]store.SymbolR
 			Scope:     sym.Scope,
 			StartLine: sym.StartLine,
 			EndLine:   sym.EndLine,
+			StartByte: sym.StartByte,
+			EndByte:   sym.EndByte,
 		})
 	}
 	return out

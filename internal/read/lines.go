@@ -2,6 +2,7 @@ package read
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -81,8 +82,69 @@ func (r *Reader) ReadLines(filePath string, startLine, endLine int) (string, err
 	return readLineRange(f, startLine, endLine)
 }
 
-// ReadSymbol returns the source slice for sym using its indexed line range.
+// ReadByteRange returns a plain-text slice of filePath from startByte through endByte
+// (half-open). Each line is prefixed with its line number and a tab.
+func (r *Reader) ReadByteRange(filePath string, startByte, endByte int) (string, error) {
+	if err := validateByteRange(startByte, endByte); err != nil {
+		return "", err
+	}
+
+	target, err := r.resolvePath(filePath)
+	if err != nil {
+		return "", err
+	}
+
+	info, err := os.Stat(target)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", ErrFileNotFound
+		}
+		return "", fmt.Errorf("stat file: %w", err)
+	}
+	if info.IsDir() {
+		return "", ErrNotAFile
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", ErrFileNotFound
+		}
+		return "", fmt.Errorf("read file: %w", err)
+	}
+
+	if startByte > len(data) {
+		return "", nil
+	}
+	if endByte > len(data) {
+		endByte = len(data)
+	}
+	if endByte <= startByte {
+		return "", nil
+	}
+
+	slice := data[startByte:endByte]
+	lineCount := 1 + bytes.Count(slice, []byte{'\n'})
+	if lineCount > MaxLineSpan {
+		return "", ErrSpanTooLarge
+	}
+
+	startLine := 1 + bytes.Count(data[:startByte], []byte{'\n'})
+	return formatByteSlice(slice, startLine)
+}
+
+// ReadSymbol returns the source slice for sym, preferring byte boundaries when set.
 func (r *Reader) ReadSymbol(sym store.SymbolRecord) (string, error) {
+	if sym.StartByte >= 0 && sym.EndByte > sym.StartByte {
+		text, err := r.ReadByteRange(sym.FilePath, sym.StartByte, sym.EndByte)
+		if err != nil {
+			return "", err
+		}
+		if text != "" {
+			return text, nil
+		}
+		// Indexed bytes no longer match on-disk content; fall back to line range.
+	}
 	return r.ReadLines(sym.FilePath, sym.StartLine, sym.EndLine)
 }
 
@@ -115,6 +177,50 @@ func validateRange(startLine, endLine int) error {
 		return ErrSpanTooLarge
 	}
 	return nil
+}
+
+func validateByteRange(startByte, endByte int) error {
+	if startByte < 0 || endByte <= startByte {
+		return ErrInvalidRange
+	}
+	if endByte-startByte > MaxResponseBytes {
+		return ErrResponseTooLarge
+	}
+	return nil
+}
+
+func formatByteSlice(slice []byte, startLine int) (string, error) {
+	if len(slice) == 0 {
+		return "", nil
+	}
+
+	var out strings.Builder
+	lineNum := startLine
+	lineStart := 0
+	for i := 0; i < len(slice); i++ {
+		if slice[i] != '\n' {
+			continue
+		}
+		if out.Len() > 0 {
+			out.WriteByte('\n')
+		}
+		fmt.Fprintf(&out, "%d\t%s", lineNum, slice[lineStart:i])
+		if out.Len() > MaxResponseBytes {
+			return "", ErrResponseTooLarge
+		}
+		lineNum++
+		lineStart = i + 1
+	}
+	if lineStart < len(slice) {
+		if out.Len() > 0 {
+			out.WriteByte('\n')
+		}
+		fmt.Fprintf(&out, "%d\t%s", lineNum, slice[lineStart:])
+		if out.Len() > MaxResponseBytes {
+			return "", ErrResponseTooLarge
+		}
+	}
+	return out.String(), nil
 }
 
 func (r *Reader) resolvePath(filePath string) (string, error) {

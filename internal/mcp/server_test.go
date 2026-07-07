@@ -534,10 +534,13 @@ func TestMCP_IndexStatusResource(t *testing.T) {
 		t.Fatalf("status response is not JSON object: %v\nbody: %s", err, text)
 	}
 
-	for _, key := range []string{"reconcile_needed", "files", "symbols", "indexer"} {
+	for _, key := range []string{"reconcile_needed", "files", "symbols", "indexer", "boundary_indexer"} {
 		if _, ok := status[key]; !ok {
 			t.Fatalf("status missing key %q: %#v", key, status)
 		}
+	}
+	if status["boundary_indexer"] != index.BoundaryIndexer() {
+		t.Fatalf("boundary_indexer = %v, want %q", status["boundary_indexer"], index.BoundaryIndexer())
 	}
 	if status["files"].(float64) < 1 {
 		t.Fatalf("files = %v, want >= 1", status["files"])

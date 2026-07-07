@@ -46,6 +46,7 @@ type GoldenMetrics struct {
 		HydrationMs                int     `json:"hydration_ms"`
 		IncrementalLatencyMs       int     `json:"incremental_latency_ms"`
 		InitDBBytesTolerancePct    float64 `json:"init_db_bytes_tolerance_pct"`
+		TreesitterRefineMs         int     `json:"treesitter_refine_ms"`
 	} `json:"thresholds"`
 	InitDBBytes int64 `json:"init_db_bytes"`
 	Benchmarks struct {
@@ -103,6 +104,11 @@ func CopyFixtureRepo(tb testing.TB) string {
 
 // InitFixture opens the cache DB and runs a full regex reindex (deterministic in CI).
 func InitFixture(tb testing.TB, repoRoot string) (*store.Store, *index.ReindexResult) {
+	return InitFixtureWithExtractor(tb, repoRoot, index.NewRegexExtractor())
+}
+
+// InitFixtureWithExtractor opens the cache DB and runs a full reindex with ext.
+func InitFixtureWithExtractor(tb testing.TB, repoRoot string, ext index.Extractor) (*store.Store, *index.ReindexResult) {
 	tb.Helper()
 	st, err := store.Open(repoRoot)
 	if err != nil {
@@ -110,7 +116,7 @@ func InitFixture(tb testing.TB, repoRoot string) (*store.Store, *index.ReindexRe
 	}
 	tb.Cleanup(func() { st.Close() })
 
-	result, err := index.Reindex(context.Background(), repoRoot, st, index.NewRegexExtractor())
+	result, err := index.Reindex(context.Background(), repoRoot, st, ext)
 	if err != nil {
 		tb.Fatalf("reindex fixture: %v", err)
 	}
