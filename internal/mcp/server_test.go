@@ -319,6 +319,29 @@ func TestMCP_SearchNameMatchContains(t *testing.T) {
 	}
 }
 
+func TestMCP_SearchInvalidNameMatch(t *testing.T) {
+	_, session, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	res, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name: "search_code_skeleton",
+		Arguments: map[string]any{
+			"query":      "ProcessPayment",
+			"name_match": "exactly",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatal("expected tool error for invalid name_match")
+	}
+	text := res.Content[0].(*mcpsdk.TextContent).Text
+	if !strings.Contains(text, "invalid name_match") {
+		t.Fatalf("error text = %q, want invalid name_match", text)
+	}
+}
+
 func TestMCP_ReadSymbolInvalidID(t *testing.T) {
 	_, session, cleanup := setupTestServer(t)
 	defer cleanup()

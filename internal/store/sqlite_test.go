@@ -545,6 +545,23 @@ func TestParseSymbolID_HashInPath(t *testing.T) {
 	}
 }
 
+func TestParseSymbolID_HashInNameNotSupported(t *testing.T) {
+	rec := store.SymbolRecord{
+		FilePath:  "a.go",
+		Kind:      "function",
+		Name:      "foo#bar",
+		StartLine: 10,
+	}
+	id := store.FormatSymbolID(rec)
+	parsed, err := store.ParseSymbolID(id)
+	if err != nil {
+		t.Fatalf("ParseSymbolID: %v", err)
+	}
+	if parsed.Name == rec.Name {
+		t.Fatalf("names containing '#' must not round-trip; got %q", parsed.Name)
+	}
+}
+
 func TestParseSymbolID_Invalid(t *testing.T) {
 	cases := []string{"", "no-separators", "a#b#c", "a#b#c#notint"}
 	for _, id := range cases {
@@ -761,5 +778,21 @@ func TestSearch_NameMatchRoundTrip(t *testing.T) {
 	}
 	if rec.Name != "ProcessPayment" || rec.EndLine != 75 {
 		t.Fatalf("unexpected record: %+v", rec)
+	}
+}
+
+func TestSearch_InvalidNameMatch(t *testing.T) {
+	st, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	_, err = st.SearchWithOptions("foo", 10, store.SearchOptions{NameMatch: "exactly"})
+	if err == nil {
+		t.Fatal("expected error for invalid name_match")
+	}
+	if !strings.Contains(err.Error(), "invalid name_match") {
+		t.Fatalf("error = %q, want invalid name_match", err.Error())
 	}
 }

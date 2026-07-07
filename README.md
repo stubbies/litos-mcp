@@ -38,7 +38,7 @@ Example search hit (no source body—just structure):
 }]
 ```
 
-Each hit includes a **`symbol_id`** (`file_path#kind#name#start_line`) that stays stable until the definition moves (line, kind, or name change). After edits that shift definitions, re-search to refresh IDs.
+Each hit includes a **`symbol_id`** (`file_path#kind#name#start_line`) that stays stable while `start_line`, `kind`, and `name` are unchanged. Symbol names must not contain `#`. Edits that move the definition or change only `end_line` may leave a stale ID or line range — re-search or re-outline after substantive edits.
 
 After large tree changes (`git pull`, branch switch), call **`reindex_index`** or run **`litos-mcp init`** again. Check sync state anytime via the **`litos://index/status`** MCP resource.
 

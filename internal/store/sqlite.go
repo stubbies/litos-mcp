@@ -300,7 +300,11 @@ func (s *Store) SearchWithOptions(query string, limit int, opts SearchOptions) (
 		limit = 10
 	}
 
-	if nameMatch := normalizeNameMatch(opts.NameMatch); nameMatch != "" {
+	nameMatch, err := parseNameMatch(opts.NameMatch)
+	if err != nil {
+		return nil, err
+	}
+	if nameMatch != "" {
 		hits, err := s.searchByName(query, limit, nameMatch)
 		if err != nil {
 			return nil, err
@@ -333,12 +337,16 @@ func normalizeMatchMode(mode string) string {
 	return "and"
 }
 
-func normalizeNameMatch(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
+func parseNameMatch(mode string) (string, error) {
+	trimmed := strings.TrimSpace(mode)
+	if trimmed == "" {
+		return "", nil
+	}
+	switch strings.ToLower(trimmed) {
 	case "exact", "contains":
-		return strings.ToLower(strings.TrimSpace(mode))
+		return strings.ToLower(trimmed), nil
 	default:
-		return ""
+		return "", fmt.Errorf("invalid name_match %q: want exact or contains", mode)
 	}
 }
 
@@ -468,7 +476,7 @@ func (s *Store) GetSymbolByID(id string) (SymbolRecord, error) {
 		&rec.Name, &rec.FilePath, &rec.Kind, &rec.Scope, &rec.StartLine, &rec.EndLine,
 	)
 	if err == sql.ErrNoRows {
-		return SymbolRecord{}, fmt.Errorf("symbol not found: %s", id)
+		return SymbolRecord{}, fmt.Errorf("%w: %s", ErrSymbolNotFound, id)
 	}
 	if err != nil {
 		return SymbolRecord{}, fmt.Errorf("get symbol by id: %w", err)

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stubbies/litos-mcp/internal/index"
@@ -18,7 +17,7 @@ const (
 		"Returns target file paths, matched symbols, and source line numbers without exposing functional block code logic. " +
 		"Prefer this tool over grep or bulk file reads for code discovery."
 	readToolDescription = "Reads an exact targeted line number slice from a designated workspace repository file path. " +
-		"Use only after search_code_skeleton confirms the file path and line range."
+		"Fallback when you lack a symbol_id; prefer read_symbol after search_code_skeleton or outline_file."
 	readSymbolToolDescription = "Reads the source slice for a symbol by its stable symbol_id from search_code_skeleton or outline_file. " +
 		"Prefer this over read_file_lines when you have a symbol_id; re-search if the symbol moved after edits."
 	outlineToolDescription = "Returns the indexed symbol skeleton for one file: symbol_ids, kinds, scopes, and line ranges. " +
@@ -194,9 +193,13 @@ func outlineResult(entries []store.OutlineEntry) (*mcpsdk.CallToolResult, any, e
 	}, nil, nil
 }
 
-func (e *toolEnv) handleReadSymbol(_ context.Context, _ *mcpsdk.CallToolRequest, in readSymbolInput) (*mcpsdk.CallToolResult, any, error) {
+func (e *toolEnv) handleReadSymbol(ctx context.Context, _ *mcpsdk.CallToolRequest, in readSymbolInput) (*mcpsdk.CallToolResult, any, error) {
 	if in.SymbolID == "" {
 		return nil, nil, fmt.Errorf("symbol_id is required")
+	}
+
+	if e.coordinator != nil {
+		e.coordinator.EnsureFresh(ctx)
 	}
 
 	sym, err := e.store.GetSymbolByID(in.SymbolID)
@@ -214,10 +217,10 @@ func (e *toolEnv) handleReadSymbol(_ context.Context, _ *mcpsdk.CallToolRequest,
 }
 
 func mapSymbolError(id string, err error) error {
-	if _, parseErr := store.ParseSymbolID(id); parseErr != nil {
-		return fmt.Errorf("invalid symbol id: %w", parseErr)
+	if errors.Is(err, store.ErrInvalidSymbolID) {
+		return fmt.Errorf("invalid symbol id: %w", err)
 	}
-	if strings.Contains(err.Error(), "symbol not found") {
+	if errors.Is(err, store.ErrSymbolNotFound) {
 		return fmt.Errorf("symbol not found: %s (symbol may be stale after edits; re-search to get a fresh symbol_id)", id)
 	}
 	return err

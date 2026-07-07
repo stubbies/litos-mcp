@@ -1,9 +1,17 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+)
+
+var (
+	// ErrInvalidSymbolID indicates a symbol_id string could not be parsed.
+	ErrInvalidSymbolID = errors.New("invalid symbol id")
+	// ErrSymbolNotFound indicates no indexed symbol matches the given symbol_id.
+	ErrSymbolNotFound = errors.New("symbol not found")
 )
 
 // SymbolRecord is a structural code symbol extracted from a source file.
@@ -18,39 +26,40 @@ type SymbolRecord struct {
 
 // FormatSymbolID returns a stable identifier derived from indexed symbol fields.
 // Format: {file_path}#{kind}#{name}#{start_line}
+// Symbol names must not contain '#'; file paths may.
 func FormatSymbolID(rec SymbolRecord) string {
 	return fmt.Sprintf("%s#%s#%s#%d", rec.FilePath, rec.Kind, rec.Name, rec.StartLine)
 }
 
 // ParseSymbolID parses a symbol ID produced by FormatSymbolID.
-// Parsing is right-anchored so file paths or names may contain '#'.
+// Parsing is right-anchored so file paths may contain '#'; symbol names must not.
 func ParseSymbolID(id string) (SymbolRecord, error) {
 	last := strings.LastIndex(id, "#")
 	if last < 0 {
-		return SymbolRecord{}, fmt.Errorf("invalid symbol id %q: missing separators", id)
+		return SymbolRecord{}, fmt.Errorf("%w: %q: missing separators", ErrInvalidSymbolID, id)
 	}
 	startLine, err := strconv.Atoi(id[last+1:])
 	if err != nil {
-		return SymbolRecord{}, fmt.Errorf("invalid symbol id %q: bad start_line: %w", id, err)
+		return SymbolRecord{}, fmt.Errorf("%w: %q: bad start_line: %v", ErrInvalidSymbolID, id, err)
 	}
 
 	rest := id[:last]
 	nameSep := strings.LastIndex(rest, "#")
 	if nameSep < 0 {
-		return SymbolRecord{}, fmt.Errorf("invalid symbol id %q: missing separators", id)
+		return SymbolRecord{}, fmt.Errorf("%w: %q: missing separators", ErrInvalidSymbolID, id)
 	}
 	name := rest[nameSep+1:]
 
 	rest = rest[:nameSep]
 	kindSep := strings.LastIndex(rest, "#")
 	if kindSep < 0 {
-		return SymbolRecord{}, fmt.Errorf("invalid symbol id %q: missing separators", id)
+		return SymbolRecord{}, fmt.Errorf("%w: %q: missing separators", ErrInvalidSymbolID, id)
 	}
 	kind := rest[kindSep+1:]
 	filePath := rest[:kindSep]
 
 	if filePath == "" || kind == "" || name == "" {
-		return SymbolRecord{}, fmt.Errorf("invalid symbol id %q: empty field", id)
+		return SymbolRecord{}, fmt.Errorf("%w: %q: empty field", ErrInvalidSymbolID, id)
 	}
 
 	return SymbolRecord{
