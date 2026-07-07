@@ -2,6 +2,10 @@
 
 > Search · read by ID · callers · map · check · CLI — local structural navigation for coding agents
 
+[![Downloads](https://img.shields.io/github/downloads/stubbies/litos-mcp/total)](https://github.com/stubbies/litos-mcp/releases)
+[![Release](https://img.shields.io/github/v/release/stubbies/litos-mcp)](https://github.com/stubbies/litos-mcp/releases)
+[![CI](https://github.com/stubbies/litos-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/stubbies/litos-mcp/actions/workflows/ci.yml)
+
 A local **MCP server and CLI** that gives coding agents structural sight over your repo—without the grep > read whole file > grep again loop.
 
 Litos indexes definitions into a SQLite cache (`.lcn_cache.db`) at the project root: symbols, scopes, line ranges, and call sites. Agents **search** by keyword, **read** exact symbols by stable ID, **trace callers**, **sketch a directory**, and **check syntax** after edits—all from compact JSON hits instead of scrolling grep output or loading entire files.
